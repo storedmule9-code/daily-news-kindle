@@ -1,0 +1,33 @@
+name: Daily News to Kindle
+
+on:
+  schedule:
+    # GitHub uses UTC. 11:30 UTC is 6:30 AM in New York during winter
+    # and 7:30 AM during summer time. Change the hour to suit your location.
+    - cron: "30 11 * * *"
+  workflow_dispatch:   # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build the digest and send it to Kindle
+        env:
+          KINDLE_EMAIL: ${{ secrets.KINDLE_EMAIL }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: python daily_news_kindle.py
