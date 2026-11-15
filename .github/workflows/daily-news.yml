@@ -1,4 +1,4 @@
-name: Daily News to Kindle
+name: Daily Digest to Kindle
 
 on:
   schedule:
@@ -22,6 +22,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-dejavu-core
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
@@ -30,4 +35,5 @@ jobs:
           KINDLE_EMAIL: ${{ secrets.KINDLE_EMAIL }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          GUARDIAN_API_KEY: ${{ secrets.GUARDIAN_API_KEY }}
         run: python daily_news_kindle.py
