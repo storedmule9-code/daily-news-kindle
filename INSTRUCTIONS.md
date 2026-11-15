@@ -1,6 +1,6 @@
 # The Daily Digest: Setup Guide
 
-Every morning your Kindle receives a newspaper-style PDF with four sections: France, Latin America, Middle East, and Gangs. Each section opens with full Guardian articles, followed by short headlines from BBC, NPR, and The Guardian. Stories that don't match a section appear under Other Headlines at the end.
+Every morning your Kindle receives a newspaper-style PDF with four sections: France, Latin America, Middle East, and Gangs. Each section opens with recent Guardian stories (headline, standfirst, and opening paragraph), followed by short headlines from BBC, NPR, and The Guardian. Stories that don't match a section appear under Other Headlines at the end.
 
 The job runs on GitHub's servers, so your computer can be off. Setup is done entirely in a web browser.
 
@@ -10,7 +10,7 @@ You need:
 - A Kindle with its Send-to-Kindle email address (ends in @kindle.com)
 - A Gmail account to send from
 - A free GitHub account (github.com)
-- A free Guardian API key (Part 2 below)
+- A free Guardian API key (Part 2)
 
 ## Part 1: Allow your sending email on your Kindle
 
@@ -21,7 +21,7 @@ You need:
 
 ## Part 2: Get a free Guardian API key
 
-This lets the program download full Guardian articles.
+The program uses this to fetch recent Guardian stories.
 
 1. Go to open-platform.theguardian.com/access.
 2. Fill in the short form and choose the **Developer** (free) option.
@@ -46,14 +46,14 @@ Gmail doesn't allow ordinary passwords for automated sending, so you need a sepa
 ## Part 5: Add your secrets
 
 1. In your repository, click **Settings**, then **Secrets and variables**, then **Actions**.
-2. Click **New repository secret** and add each of these four, one at a time:
+2. Click **New repository secret** and add each of these, one at a time:
 
-| Name | Value |
-|---|---|
-| `KINDLE_EMAIL` | your @kindle.com address |
-| `SENDER_EMAIL` | your Gmail address |
-| `SMTP_PASSWORD` | the 16-character App Password |
-| `GUARDIAN_API_KEY` | the key from Part 2 |
+| Name | Value | Required? |
+|---|---|---|
+| `KINDLE_EMAIL` | your @kindle.com address | Yes |
+| `SENDER_EMAIL` | your Gmail address | Yes |
+| `SMTP_PASSWORD` | the 16-character App Password | Yes |
+| `GUARDIAN_API_KEY` | the key from Part 2 | Yes, for Guardian stories |
 
 Once saved, GitHub hides these values. You can replace them but never view them again.
 
@@ -65,13 +65,15 @@ Once saved, GitHub hides these values. You can replace them but never view them 
 
 ## Part 7: Add the schedule file
 
-The schedule file is in the `.github/workflows` folder of the package. Because that folder name starts with a dot, macOS hides it by default. Press Cmd+Shift+. in Finder to show hidden folders, or copy the text below.
+The schedule file is in the `.github/workflows` folder of the package. Because that folder name starts with a dot, macOS hides it by default. Press Cmd+Shift+. in Finder to show hidden folders, or copy the text from the package.
 
 1. In your repository, click **Add file**, then **Create new file**.
 2. In the file name box, type exactly: `.github/workflows/daily-news.yml`
    Typing the slashes creates the folders automatically.
 3. Paste in the contents of `daily-news.yml` from the package.
 4. Click **Commit changes**.
+
+If the file already exists, open it, click the pencil icon, and replace the contents.
 
 ## Part 8: Test it
 
@@ -85,7 +87,7 @@ The schedule file is in the `.github/workflows` folder of the package. Because t
 Common problems:
 - *"Missing required settings"*: a secret name is misspelled. The names must match exactly.
 - *Authentication error*: you used your normal Gmail password. Use the App Password.
-- *Full articles missing, headlines present*: the Guardian key is missing or mistyped. The digest still sends without it.
+- *Guardian stories missing*: the Guardian key is missing or mistyped. Headlines still send.
 - *Nothing on the Kindle*: your Gmail address isn't on the Kindle's approved list.
 
 ## Daily use
@@ -99,14 +101,16 @@ Nothing else is needed. The digest is sent at 6:30 AM New York time. GitHub some
 ## Making changes
 
 - **Section topics:** open `daily_news_kindle.py`, click the pencil icon, and edit the `SECTIONS` list. Each section has a `pattern` (the words that send a story there) and a `guardian_query` (what to search the Guardian for).
-- **Number of full articles:** change `full_articles` in each section.
+- **Guardian stories per section:** change `guardian_stories` in each section.
 - **Headlines per section:** change `MAX_BRIEFS_PER_SECTION`.
 - **News sources:** edit `RSS_FEEDS` in the same file.
 - **Send it now:** go to the Actions tab and run the workflow manually.
 - **Pause it:** in the Actions tab, click the workflow, then the **...** menu, then **Disable workflow**.
 
 **Notes**
-- Sections are checked in order, so a story about a cartel in Mexico goes under Latin America, not Gangs.
+- Gang stories are checked first, so a story about gang violence in Haiti or a cartel attack in Mexico goes under Gangs, not the regional section.
+- The Latin America section includes any story that mentions Latin America or one of its countries (all 20 Spanish- and Portuguese-speaking countries plus Haiti), or a common adjective such as "Brazilian" or "Mexican", even if the story also covers the United States. Puerto Rico and Guyana are not included. To change which countries count, edit the Latin America `pattern` and `guardian_query` in the SECTIONS list.
+- Gang stories are matched on specific terms such as "gang violence," "gang members," "drug cartel," and MS-13. To change them, edit the Gangs `pattern` and `guardian_query` in the SECTIONS list.
 - GitHub turns off scheduled jobs in repositories with no activity for 60 days. If the digest stops, check the Actions tab for a prompt to re-enable it.
-- The Guardian API key is free for personal use. Full articles are for your own reading, not for redistribution.
+- The text shown is the Guardian's own standfirst and opening paragraph, for your personal reading. Use the links to read the full stories on the Guardian's site.
 - Arabic and other non-Latin scripts may not display correctly in the PDF. English-language stories display normally.

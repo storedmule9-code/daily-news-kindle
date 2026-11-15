@@ -2,8 +2,8 @@
 """The Daily Digest: a newspaper-style PDF emailed to your Kindle each morning.
 
 Sections: France, Latin America, Middle East, Gangs, then Other Headlines.
-Within each section, full Guardian articles (via the Guardian Open Platform API)
-come first, followed by short headlines from BBC, NPR and The Guardian RSS feeds.
+Within each section, recent Guardian stories come first (standfirst and opening
+paragraph), followed by short headlines from BBC, NPR and The Guardian RSS feeds.
 """
 
 import datetime
@@ -26,40 +26,48 @@ RSS_FEEDS = {
     "NPR World": "https://feeds.npr.org/1004/rss.xml",
     "Guardian World": "https://www.theguardian.com/world/rss",
 }
-RSS_ITEMS_PER_FEED = 25     # how many headlines to read from each feed
-MAX_BRIEFS_PER_SECTION = 8  # short headlines per section
-SUMMARY_CHARS = 350
+RSS_ITEMS_PER_FEED = 25     # headlines read from each feed
+MAX_BRIEFS_PER_SECTION = 8  # short headlines shown per section
+SUMMARY_CHARS = 350         # length of RSS excerpts
+OPENING_CHARS = 700         # length of Guardian opening paragraph shown
 
-# Sections are checked in this order. A story goes into the first section
-# whose pattern matches its headline or summary.
+# Stories are routed by "priority" (lowest first). A story goes into the first
+# section whose pattern matches its headline or excerpt. Sections print in the
+# order listed here.
 SECTIONS = [
     {
         "name": "France",
+        "priority": 1,
         "pattern": r"\b(france|french|paris|macron)",
         "guardian_query": "France",
         "guardian_section": "world",
-        "full_articles": 2,
+        "guardian_stories": 2,
     },
     {
         "name": "Latin America",
-        "pattern": r"\b(latin america|mexic|brazil|argentin|colombia|venezuela|peru|chile|bolivia|ecuador|haiti|cuba|honduras|guatemala|el salvador|nicaragua|panama)",
-        "guardian_query": '"Latin America" OR Mexico OR Brazil OR Argentina OR Colombia',
+        "priority": 2,
+        # Any mention of Latin America or a Latin American country places a story here,
+        # even if it also covers the US.
+        "pattern": r"\b(latin america|latin american|latam|south america|central america|mexic|guatemal|belize|hondura|el salvador|salvadoran|salvadorean|nicaragu|costa rica|panam|cuba|dominican republic|haiti|colombia|venezuela|guyanese|ecuador|peru|bolivia|brazil|paraguay|uruguay|argentin|chile)",
+        "guardian_query": '"Latin America" OR Mexico OR Guatemala OR Belize OR Honduras OR "El Salvador" OR Nicaragua OR "Costa Rica" OR Panama OR Cuba OR "Dominican Republic" OR Haiti OR Colombia OR Venezuela OR Ecuador OR Peru OR Bolivia OR Brazil OR Paraguay OR Uruguay OR Argentina OR Chile',
         "guardian_section": "world",
-        "full_articles": 2,
+        "guardian_stories": 3,
     },
     {
         "name": "Middle East",
+        "priority": 3,
         "pattern": r"\b(middle east|israel|gaza|palestin|iran|iraq|syria|lebanon|yemen|saudi|egypt|jordan|hezbollah|hamas|houthi)",
         "guardian_query": '"Middle East" OR Israel OR Gaza OR Iran',
         "guardian_section": "world",
-        "full_articles": 2,
+        "guardian_stories": 2,
     },
     {
         "name": "Gangs",
-        "pattern": r"\b(gangs?|cartels?|ms-13|mara salvatrucha|tren de aragua|mafia)",
-        "guardian_query": "gang OR gangs OR cartel OR cartels",
+        "priority": 0,   # checked first, so gang stories land here before regional sections
+        "pattern": r"\b(street gangs?|gang violence|gang members?|gang leaders?|gang crime|gang wars?|gang-related|drug gangs?|drug cartels?|cartel violence|cartel (?:members?|leaders?|gunmen|killings?|bosses?)|ms-13|mara salvatrucha|tren de aragua|mafia)",
+        "guardian_query": '"street gang" OR "gang violence" OR "gang members" OR "drug cartel" OR "cartel violence" OR "Tren de Aragua" OR MS-13',
         "guardian_section": None,
-        "full_articles": 2,
+        "guardian_stories": 2,
     },
 ]
 # --------------------------------------------------------------------------
@@ -90,16 +98,16 @@ def clean(text: str) -> str:
 
 
 def truncate(text: str, limit: int) -> str:
+    """Shorten text at a word boundary."""
     if len(text) <= limit:
         return text
-    cut = text[:limit].rsplit(" ", 1)[0]
-    return cut + "..."
+    return text[:limit].rsplit(" ", 1)[0] + "..."
 
 
 # ---- Content gathering -----------------------------------------------------
 
 def fetch_guardian(query, section, count):
-    """Return full Guardian articles matching the query. Empty list if no key or on error."""
+    """Return recent Guardian stories matching the query. Empty list if no key or on error."""
     if not GUARDIAN_API_KEY:
         return []
 
@@ -121,18 +129,18 @@ def fetch_guardian(query, section, count):
         print(f"WARNING: Guardian request failed for '{query}': {exc}", file=sys.stderr)
         return []
 
-    articles = []
+    stories = []
     for result in data.get("response", {}).get("results", []):
         fields = result.get("fields", {})
         paragraphs = [clean(p) for p in fields.get("bodyText", "").split("\n") if p.strip()]
-        articles.append({
+        stories.append({
             "title": clean(fields.get("headline") or result.get("webTitle", "Untitled")),
             "byline": clean(fields.get("byline", "")),
-            "trail": clean(fields.get("trailText", "")),
-            "paragraphs": paragraphs,
+            "standfirst": clean(fields.get("trailText", "")),
+            "opening": truncate(paragraphs[0], OPENING_CHARS) if paragraphs else "",
             "link": result.get("webUrl", ""),
         })
-    return articles
+    return stories
 
 
 def fetch_rss_items():
@@ -153,39 +161,56 @@ def fetch_rss_items():
     return items
 
 
+def matches(spec, text):
+    """True if text matches the section's pattern and not its exclusion pattern."""
+    if not re.search(spec["pattern"], text):
+        return False
+    exclude = spec.get("exclude")
+    if not exclude or re.search(spec.get("keep_if", "(?!)"), text):
+        return True
+    return not re.search(exclude, text)
+
+
 def build_digest():
-    """Return the sections to print, in order, each with full articles and briefs."""
+    """Return the sections to print, in order."""
     seen = set()
-    layout = []
+    layout = {spec["name"]: {"name": spec["name"], "pattern": spec["pattern"], "stories": [], "briefs": []}
+              for spec in SECTIONS}
+    by_priority = sorted(SECTIONS, key=lambda s: s["priority"])
 
-    for spec in SECTIONS:
-        full = []
-        for article in fetch_guardian(spec["guardian_query"], spec["guardian_section"], spec["full_articles"]):
-            if article["link"] and article["link"] not in seen:
-                seen.add(article["link"])
-                full.append(article)
-        layout.append({"name": spec["name"], "pattern": spec["pattern"], "full": full, "brief": []})
+    # Guardian stories: fetch in priority order, keep only stories whose headline,
+    # standfirst or opening paragraph actually matches the section.
+    for spec in by_priority:
+        for story in fetch_guardian(spec["guardian_query"], spec["guardian_section"], spec["guardian_stories"]):
+            if not story["link"] or story["link"] in seen:
+                continue
+            text = " ".join([story["title"], story["standfirst"], story["opening"]]).lower()
+            if not matches(spec, text):
+                continue
+            seen.add(story["link"])
+            layout[spec["name"]]["stories"].append(story)
 
-    other = {"name": "Other Headlines", "pattern": None, "full": [], "brief": []}
-
+    # RSS headlines: route by priority, anything unmatched goes to Other Headlines.
+    other = {"name": "Other Headlines", "pattern": None, "stories": [], "briefs": []}
     for item in fetch_rss_items():
         if not item["link"] or item["link"] in seen:
             continue
         text = (item["title"] + " " + item["summary"]).lower()
 
         target = other
-        for section in layout:
-            if re.search(section["pattern"], text):
-                target = section
+        for spec in by_priority:
+            if matches(spec, text):
+                target = layout[spec["name"]]
                 break
 
-        if len(target["brief"]) >= MAX_BRIEFS_PER_SECTION:
+        if len(target["briefs"]) >= MAX_BRIEFS_PER_SECTION:
             continue
         seen.add(item["link"])
-        target["brief"].append(item)
+        target["briefs"].append(item)
 
-    sections = layout + [other]
-    return [s for s in sections if s["full"] or s["brief"]]
+    # Print in the order listed in SECTIONS.
+    ordered = [layout[spec["name"]] for spec in SECTIONS] + [other]
+    return [s for s in ordered if s["stories"] or s["briefs"]]
 
 
 # ---- PDF layout -----------------------------------------------------------
@@ -231,30 +256,30 @@ def section_banner(pdf, name):
     rule(pdf, 0.8, 3)
 
 
-def full_article(pdf, article):
-    pdf.set_font("Serif", "B", 16)
-    pdf.multi_cell(0, 7, article["title"], new_x="LMARGIN", new_y="NEXT")
+def guardian_story(pdf, story):
+    pdf.set_font("Serif", "B", 13.5)
+    pdf.multi_cell(0, 6.2, story["title"], new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Sans", "", 7.5)
     pdf.set_text_color(90, 90, 90)
-    credit = "The Guardian" + (f"   |   By {article['byline']}" if article["byline"] else "")
+    credit = "The Guardian" + (f"   |   By {story['byline']}" if story["byline"] else "")
     pdf.multi_cell(0, 4.5, credit, new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     pdf.ln(1.5)
 
-    if article["trail"]:
-        pdf.set_font("Serif", "B", 10)
-        pdf.multi_cell(0, 5, article["trail"], align="J", new_x="LMARGIN", new_y="NEXT")
-        pdf.ln(2)
+    if story["standfirst"]:
+        pdf.set_font("Serif", "B", 10.5)
+        pdf.multi_cell(0, 5.3, story["standfirst"], align="J", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(1.5)
 
-    pdf.set_font("Serif", "", 10)
-    for paragraph in article["paragraphs"]:
-        pdf.multi_cell(0, 5.2, paragraph, align="J", new_x="LMARGIN", new_y="NEXT")
+    if story["opening"]:
+        pdf.set_font("Serif", "", 10.5)
+        pdf.multi_cell(0, 5.3, story["opening"], align="J", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(1.5)
 
     pdf.set_font("Sans", "", 6.5)
     pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(0, 3.8, f"Read online: {article['link']}", new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(0, 3.8, f"Read the full story: {story['link']}", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     rule(pdf, 0.2, 4)
 
@@ -284,9 +309,9 @@ def build_pdf(sections, today: str) -> bytes:
 
     for section in sections:
         section_banner(pdf, section["name"])
-        for article in section["full"]:
-            full_article(pdf, article)
-        for item in section["brief"]:
+        for story in section["stories"]:
+            guardian_story(pdf, story)
+        for item in section["briefs"]:
             brief_item(pdf, item)
 
     return bytes(pdf.output())
@@ -323,7 +348,7 @@ def main():
         sys.exit(f"Missing required settings: {', '.join(missing)}")
 
     if not GUARDIAN_API_KEY:
-        print("Note: GUARDIAN_API_KEY not set. Sending headlines only, without full Guardian articles.")
+        print("Note: GUARDIAN_API_KEY not set. Sending headlines only, without Guardian stories.")
 
     today = datetime.date.today().strftime("%A, %B %d, %Y")
     sections = build_digest()
@@ -332,8 +357,8 @@ def main():
 
     pdf_bytes = build_pdf(sections, today)
     send_to_kindle(pdf_bytes, today)
-    story_count = sum(len(s["full"]) + len(s["brief"]) for s in sections)
-    print(f"Sent The Daily Digest for {today} ({story_count} stories) to {KINDLE_EMAIL}")
+    count = sum(len(s["stories"]) + len(s["briefs"]) for s in sections)
+    print(f"Sent The Daily Digest for {today} ({count} stories) to {KINDLE_EMAIL}")
 
 
 if __name__ == "__main__":
