@@ -2,9 +2,8 @@ name: Daily Digest to Kindle
 
 on:
   schedule:
-    # GitHub uses UTC. 11:30 UTC is 6:30 AM in New York during winter
-    # and 7:30 AM during summer time. Change the hour to suit your location.
-    - cron: "30 11 * * *"
+    # 6:30 AM Paris time, winter (late October to late March): 5:30 UTC
+    - cron: "30 5 * * *"
   workflow_dispatch:   # lets you run it by hand from the Actions tab
 
 permissions:
