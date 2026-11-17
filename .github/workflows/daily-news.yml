@@ -2,12 +2,16 @@ name: Daily Digest to Kindle
 
 on:
   schedule:
-    # 5:30 AM Paris time, winter (late October to late March): 4:30 UTC
-    - cron: "30 4 * * *"
-  workflow_dispatch:   # lets you run it by hand from the Actions tab
+    # The job sends at 6:30 AM Paris time. GitHub uses UTC, so one of the first two
+    # runs lands at 6:30 AM Paris depending on the season; the other is skipped automatically.
+    - cron: "30 4 * * *"    # summer time (CEST)
+    - cron: "30 5 * * *"    # winter time (CET)
+    # Backup, 30 minutes after the winter run. Sends only if today's digest hasn't gone out.
+    - cron: "0 6 * * *"
+  workflow_dispatch:         # run by hand from the Actions tab
 
 permissions:
-  contents: read
+  contents: write            # needed to record the date of the last digest
 
 jobs:
   send:
@@ -16,23 +20,58 @@ jobs:
       - name: Check out the code
         uses: actions/checkout@v4
 
+      - name: Decide whether to send today's digest
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          TODAY=$(TZ=Europe/Paris date +%F)
+          HOUR=$(TZ=Europe/Paris date +%H)
+          LAST=$(cat last_sent.txt 2>/dev/null || true)
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            SEND=true; REASON="started by hand, sending now"
+          elif [ "$LAST" = "$TODAY" ]; then
+            SEND=false; REASON="already sent today ($TODAY), skipping"
+          elif [ "$((10#$HOUR))" -lt 6 ]; then
+            SEND=false; REASON="before 6 AM in Paris (it is $HOUR:xx), waiting"
+          else
+            SEND=true; REASON="sending the digest for $TODAY"
+          fi
+          echo "$REASON"
+          echo "send=$SEND" >> "$GITHUB_OUTPUT"
+
       - name: Set up Python
+        if: steps.gate.outputs.send == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install fonts
+        if: steps.gate.outputs.send == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq fonts-dejavu-core
 
       - name: Install dependencies
+        if: steps.gate.outputs.send == 'true'
         run: pip install -r requirements.txt
 
       - name: Build the digest and send it to Kindle
+        if: steps.gate.outputs.send == 'true'
         env:
           KINDLE_EMAIL: ${{ secrets.KINDLE_EMAIL }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           GUARDIAN_API_KEY: ${{ secrets.GUARDIAN_API_KEY }}
         run: python daily_news_kindle.py
+
+      - name: Record that today's digest was sent
+        if: steps.gate.outputs.send == 'true'
+        run: |
+          TODAY=$(TZ=Europe/Paris date +%F)
+          echo "$TODAY" > last_sent.txt
+          git config user.name "digest-bot"
+          git config user.email "digest-bot@users.noreply.github.com"
+          git add last_sent.txt
+          git commit -m "Record digest sent for $TODAY" || echo "Nothing new to record"
+          git push
