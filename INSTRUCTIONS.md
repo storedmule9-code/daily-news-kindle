@@ -63,7 +63,7 @@ Once saved, GitHub hides these values. You can replace them but never view them 
 2. Drag in `daily_news_kindle.py`, `requirements.txt`, and `INSTRUCTIONS.md`.
 3. Click **Commit changes**.
 
-## Part 7: Add the schedule file
+## Part 7: Add the schedule file (version 11)
 
 The schedule file is in the `.github/workflows` folder of the package. Because that folder name starts with a dot, macOS hides it by default. Press Cmd+Shift+. in Finder to show hidden folders, or copy the text from the package.
 
@@ -92,18 +92,18 @@ Common problems:
 
 ## Daily use
 
-Nothing else is needed. The digest is sent at 6:30 AM New York time. GitHub sometimes starts scheduled jobs a few minutes late.
+Nothing else is needed. The digest is sent at 6:30 AM Paris time, and the schedule adjusts for daylight saving time automatically, so you never need to edit the time.
 
-**Clock changes:** the schedule runs on UTC, so the delivery time shifts by an hour when daylight saving time starts or ends. To keep 6:30 AM local time year-round, edit the `cron` line in `daily-news.yml`:
-- Winter (EST): `30 11 * * *`
-- Summer (EDT): `30 10 * * *`
+**Backup run:** a second run starts 30 minutes after the first. It sends only if today's digest hasn't gone out yet, so a late or skipped GitHub run is covered without sending you two digests.
+
+**Record of sending:** after each successful send, the job saves the date in a file called `last_sent.txt` in your repository. Don't delete it. Running the workflow by hand always sends a digest, even if one has already gone out that day.
 
 ## Making changes
 
 - **Section topics:** open `daily_news_kindle.py`, click the pencil icon, and edit the `SECTIONS` list. Each section has a `pattern` (the words that send a story there) and a `guardian_query` (what to search the Guardian for).
 - **Guardian stories per section:** change `guardian_stories` in each section.
 - **Headlines per section:** change `MAX_BRIEFS_PER_SECTION`.
-- **News sources:** edit `RSS_FEEDS` in the same file.
+- **News sources:** edit `RSS_FEEDS` in the same file. AP News is included through AP's official Flipboard feed, because AP's own RSS feeds were discontinued in 2024.
 - **Send it now:** go to the Actions tab and run the workflow manually.
 - **Pause it:** in the Actions tab, click the workflow, then the **...** menu, then **Disable workflow**.
 

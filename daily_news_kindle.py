@@ -25,6 +25,9 @@ RSS_FEEDS = {
     "BBC World": "https://feeds.bbci.co.uk/news/world/rss.xml",
     "NPR World": "https://feeds.npr.org/1004/rss.xml",
     "Guardian World": "https://www.theguardian.com/world/rss",
+    # AP's own RSS feeds were discontinued in 2024. This is AP's official Flipboard
+    # top stories feed; each item links to the story on apnews.com.
+    "AP News": "https://flipboard.com/@associatedpress/top-stories-u7govdf1z.rss",
 }
 RSS_ITEMS_PER_FEED = 25     # headlines read from each feed
 MAX_BRIEFS_PER_SECTION = 8  # short headlines shown per section
