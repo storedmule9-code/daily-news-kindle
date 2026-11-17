@@ -2,8 +2,8 @@ name: Daily Digest to Kindle
 
 on:
   schedule:
-    # 6:30 AM Paris time, winter (late October to late March): 5:30 UTC
-    - cron: "30 5 * * *"
+    # 5:30 AM Paris time, winter (late October to late March): 4:30 UTC
+    - cron: "30 4 * * *"
   workflow_dispatch:   # lets you run it by hand from the Actions tab
 
 permissions:
