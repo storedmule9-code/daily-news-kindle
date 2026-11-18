@@ -1,6 +1,8 @@
 # The Daily Digest: Setup Guide
 
-Every morning your Kindle receives a newspaper-style PDF with four sections: France, Latin America, Middle East, and Gangs. Each section opens with recent Guardian stories (headline, standfirst, and opening paragraph), followed by short headlines from BBC, NPR, and The Guardian. Stories that don't match a section appear under Other Headlines at the end.
+Every morning your Kindle receives a newspaper-style PDF. It opens with **Top Stories**, then four topic sections: **France**, **Latin America**, **Middle East**, and **Gangs**. A story that appears under Top Stories is not repeated in a topic section.
+
+Sources are prioritized: **AP News first, then The Guardian, then BBC and NPR.** This order applies to Top Stories and inside every topic section. Guardian stories in the topic sections show a headline, standfirst, and opening paragraph. Everything else shows a short excerpt and a link. When several sources cover the same story, it is shown once, from the highest-priority source, with the others listed under it ("Also reported by ...").
 
 The job runs on GitHub's servers, so your computer can be off. Setup is done entirely in a web browser.
 
@@ -103,11 +105,15 @@ Nothing else is needed. The digest is sent at 6:30 AM Paris time, and the schedu
 - **Section topics:** open `daily_news_kindle.py`, click the pencil icon, and edit the `SECTIONS` list. Each section has a `pattern` (the words that send a story there) and a `guardian_query` (what to search the Guardian for).
 - **Guardian stories per section:** change `guardian_stories` in each section.
 - **Headlines per section:** change `MAX_BRIEFS_PER_SECTION`.
+- **Source priority:** edit `SOURCE_ORDER` in the same file. The first name has the highest priority.
+- **Number of top stories:** edit `TOP_PER_SOURCE`, which sets how many lead stories each source can contribute to Top Stories. The default is 4 from AP, 3 from the Guardian, 2 from BBC, and 1 from NPR.
+- **Other Headlines section:** set `INCLUDE_OTHER_HEADLINES = True` to add a final section for stories that fit no topic. It is off by default.
 - **News sources:** edit `RSS_FEEDS` in the same file. AP News is included through AP's official Flipboard feed, because AP's own RSS feeds were discontinued in 2024.
 - **Send it now:** go to the Actions tab and run the workflow manually.
 - **Pause it:** in the Actions tab, click the workflow, then the **...** menu, then **Disable workflow**.
 
 **Notes**
+- A story is judged to be the same as another by comparing headline words, so two outlets covering one event are shown once. Occasionally two different stories are treated as the same, or the same story appears twice with very different headlines.
 - Gang stories are checked first, so a story about gang violence in Haiti or a cartel attack in Mexico goes under Gangs, not the regional section.
 - The Latin America section includes any story that mentions Latin America or one of its countries (all 20 Spanish- and Portuguese-speaking countries plus Haiti), or a common adjective such as "Brazilian" or "Mexican", even if the story also covers the United States. Puerto Rico and Guyana are not included. To change which countries count, edit the Latin America `pattern` and `guardian_query` in the SECTIONS list.
 - Gang stories are matched on specific terms such as "gang violence," "gang members," "drug cartel," and MS-13. To change them, edit the Gangs `pattern` and `guardian_query` in the SECTIONS list.

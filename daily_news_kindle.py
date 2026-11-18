@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """The Daily Digest: a newspaper-style PDF emailed to your Kindle each morning.
 
-Sections: France, Latin America, Middle East, Gangs, then Other Headlines.
-Within each section, recent Guardian stories come first (standfirst and opening
-paragraph), followed by short headlines from BBC, NPR and The Guardian RSS feeds.
+Layout: Top Stories first, then France, Latin America, Middle East and Gangs.
+A story shown under Top Stories is not repeated in a topic section.
+
+Sources are prioritized: AP News first, then The Guardian, then BBC and NPR.
+Guardian stories pulled from the Guardian API show their standfirst and opening
+paragraph; everything else shows a short excerpt with a link.
 """
 
 import datetime
@@ -33,6 +36,19 @@ RSS_ITEMS_PER_FEED = 25     # headlines read from each feed
 MAX_BRIEFS_PER_SECTION = 8  # short headlines shown per section
 SUMMARY_CHARS = 350         # length of RSS excerpts
 OPENING_CHARS = 700         # length of Guardian opening paragraph shown
+TOP_SUMMARY_CHARS = 500     # length of excerpts under Top Stories
+
+# Source priority, highest first: AP News, then The Guardian, then the rest.
+SOURCE_ORDER = ["AP News", "Guardian World", "BBC World", "NPR World"]
+
+# How many lead stories each source can contribute to Top Stories, in priority order.
+TOP_PER_SOURCE = {"AP News": 4, "Guardian World": 3, "BBC World": 2, "NPR World": 1}
+
+# Show an "Other Headlines" section at the end for stories that fit no topic.
+INCLUDE_OTHER_HEADLINES = False
+
+DISPLAY_NAMES = {"AP News": "AP News", "Guardian World": "The Guardian",
+                 "BBC World": "BBC News", "NPR World": "NPR"}
 
 # Stories are routed by "priority" (lowest first). A story goes into the first
 # section whose pattern matches its headline or excerpt. Sections print in the
@@ -146,22 +162,95 @@ def fetch_guardian(query, section, count):
     return stories
 
 
-def fetch_rss_items():
-    items = []
-    for name, url in RSS_FEEDS.items():
+STOPWORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "after", "over", "into", "amid",
+    "says", "said", "say", "new", "will", "could", "would", "about", "been", "have", "has",
+    "are", "was", "were", "but", "not", "its", "their", "than", "more", "most", "also",
+    "out", "how", "why", "what", "who", "when", "year", "years", "week", "day", "news",
+    "live", "update", "report", "reports",
+}
+
+
+def story_tokens(text):
+    """Reduce a headline to a set of word stems, for spotting the same story across sources."""
+    words = re.findall(r"[a-z0-9']+", text.lower())
+    return {w[:5] for w in words if len(w) > 2 and w not in STOPWORDS}
+
+
+def same_story(a, b):
+    """True if two sets of headline stems are probably about the same story."""
+    if not a or not b:
+        return False
+    shared = len(a & b)
+    small = min(len(a), len(b))
+    return (shared >= 3 and shared / small >= 0.5) or (shared >= 2 and shared / small >= 0.7)
+
+
+def normalize_link(url):
+    parts = urllib.parse.urlsplit((url or "").strip())
+    return (parts.netloc + parts.path.rstrip("/")).lower()
+
+
+def source_rank(name):
+    return SOURCE_ORDER.index(name) if name in SOURCE_ORDER else len(SOURCE_ORDER)
+
+
+def fetch_rss_by_source():
+    """Return {source name: [items in the feed's own order]}, highest-priority source first."""
+    feeds = {}
+    for name in sorted(RSS_FEEDS, key=source_rank):
         try:
-            parsed = feedparser.parse(url)
+            parsed = feedparser.parse(RSS_FEEDS[name])
         except Exception as exc:
             print(f"WARNING: could not read {name}: {exc}", file=sys.stderr)
             continue
+        items = []
         for entry in parsed.entries[:RSS_ITEMS_PER_FEED]:
+            title = clean(entry.get("title", ""))
+            link = entry.get("link", "")
+            if not title or not link:
+                continue
             items.append({
-                "title": clean(entry.get("title", "Untitled")),
-                "summary": truncate(clean(entry.get("summary", "")), SUMMARY_CHARS),
-                "link": entry.get("link", ""),
+                "title": title,
+                "summary": truncate(clean(entry.get("summary", "")), TOP_SUMMARY_CHARS),
+                "link": link,
                 "source": name,
+                "kind": "brief",
             })
-    return items
+        if items:
+            feeds[name] = items
+        else:
+            print(f"WARNING: no items found for {name}", file=sys.stderr)
+    return feeds
+
+
+def pick_top_stories(feeds):
+    """Choose lead stories: AP first, then The Guardian, then the rest.
+
+    A lead story that another source also covers is shown once, with the other
+    sources listed under it.
+    """
+    top = []
+    for source in sorted(feeds, key=source_rank):
+        limit = TOP_PER_SOURCE.get(source, 1)
+        taken = 0
+        for item in feeds[source][: limit + 3]:
+            if taken >= limit:
+                break
+            tokens = story_tokens(item["title"])
+            if any(same_story(t["_tokens"], tokens) for t in top):
+                continue   # already covered by a higher-priority source
+            top.append(dict(item, _tokens=tokens, also=[]))
+            taken += 1
+
+    # List which other sources also cover each top story.
+    for story in top:
+        for source, items in feeds.items():
+            if source == story["source"]:
+                continue
+            if any(same_story(story["_tokens"], story_tokens(i["title"])) for i in items):
+                story["also"].append(source)
+    return top
 
 
 def matches(spec, text):
@@ -175,45 +264,65 @@ def matches(spec, text):
 
 
 def build_digest():
-    """Return the sections to print, in order."""
-    seen = set()
-    layout = {spec["name"]: {"name": spec["name"], "pattern": spec["pattern"], "stories": [], "briefs": []}
-              for spec in SECTIONS}
-    by_priority = sorted(SECTIONS, key=lambda s: s["priority"])
+    """Return the sections to print, in order: Top Stories, then each topic."""
+    feeds = fetch_rss_by_source()
+    top = pick_top_stories(feeds)
 
-    # Guardian stories: fetch in priority order, keep only stories whose headline,
-    # standfirst or opening paragraph actually matches the section.
+    # Anything already shown under Top Stories is never repeated below.
+    seen_links = {normalize_link(t["link"]) for t in top}
+    shown = [t["_tokens"] for t in top]
+
+    def claim(item):
+        """True if the item is new; records it as shown."""
+        key = normalize_link(item["link"])
+        tokens = story_tokens(item["title"])
+        if not key or key in seen_links or any(same_story(tokens, s) for s in shown):
+            return False
+        seen_links.add(key)
+        shown.append(tokens)
+        return True
+
+    by_priority = sorted(SECTIONS, key=lambda s: s["priority"])
+    layout = {spec["name"]: {"name": spec["name"], "items": [], "spec": spec} for spec in SECTIONS}
+    other = {"name": "Other Headlines", "items": [], "spec": None}
+
+    # Candidates from every source. Guardian API stories are fetched per topic.
+    candidates = []
     for spec in by_priority:
         for story in fetch_guardian(spec["guardian_query"], spec["guardian_section"], spec["guardian_stories"]):
-            if not story["link"] or story["link"] in seen:
+            story.update(source="Guardian World", kind="story", summary="")
+            candidates.append(story)
+    for items in feeds.values():
+        candidates.extend(items)
+
+    # Order: AP, then The Guardian (full stories before headlines), then BBC, then NPR.
+    # The sort is stable, so each feed keeps its own editorial order.
+    candidates.sort(key=lambda i: (source_rank(i["source"]), 0 if i["kind"] == "story" else 1))
+
+    for item in candidates:
+        text = " ".join([item["title"], item.get("standfirst", ""), item.get("opening", ""),
+                         item.get("summary", "")]).lower()
+        target = next((layout[s["name"]] for s in by_priority if matches(s, text)), None)
+        if target is None:
+            if not INCLUDE_OTHER_HEADLINES or item["kind"] == "story":
                 continue
-            text = " ".join([story["title"], story["standfirst"], story["opening"]]).lower()
-            if not matches(spec, text):
+            target = other
+
+        if item["kind"] == "story":
+            cap = target["spec"]["guardian_stories"]
+            if sum(1 for i in target["items"] if i["kind"] == "story") >= cap:
                 continue
-            seen.add(story["link"])
-            layout[spec["name"]]["stories"].append(story)
-
-    # RSS headlines: route by priority, anything unmatched goes to Other Headlines.
-    other = {"name": "Other Headlines", "pattern": None, "stories": [], "briefs": []}
-    for item in fetch_rss_items():
-        if not item["link"] or item["link"] in seen:
+        elif sum(1 for i in target["items"] if i["kind"] == "brief") >= MAX_BRIEFS_PER_SECTION:
             continue
-        text = (item["title"] + " " + item["summary"]).lower()
 
-        target = other
-        for spec in by_priority:
-            if matches(spec, text):
-                target = layout[spec["name"]]
-                break
+        if claim(item):
+            target["items"].append(item)
 
-        if len(target["briefs"]) >= MAX_BRIEFS_PER_SECTION:
-            continue
-        seen.add(item["link"])
-        target["briefs"].append(item)
-
-    # Print in the order listed in SECTIONS.
-    ordered = [layout[spec["name"]] for spec in SECTIONS] + [other]
-    return [s for s in ordered if s["stories"] or s["briefs"]]
+    sections = [{"name": "Top Stories", "items": top, "top": True}]
+    sections += [layout[spec["name"]] for spec in SECTIONS]
+    if INCLUDE_OTHER_HEADLINES:
+        sections.append(other)
+    return [s for s in sections if s["items"]]
 
 
 # ---- PDF layout -----------------------------------------------------------
@@ -261,7 +370,7 @@ def section_banner(pdf, name):
 
 def guardian_story(pdf, story):
     pdf.set_font("Serif", "B", 13.5)
-    pdf.multi_cell(0, 6.2, story["title"], new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(0, 6.2, story["title"], align="L", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Sans", "", 7.5)
     pdf.set_text_color(90, 90, 90)
@@ -287,15 +396,46 @@ def guardian_story(pdf, story):
     rule(pdf, 0.2, 4)
 
 
-def brief_item(pdf, item):
-    pdf.set_font("Serif", "B", 11)
-    pdf.multi_cell(0, 5.2, item["title"], new_x="LMARGIN", new_y="NEXT")
+def source_label(item):
+    return DISPLAY_NAMES.get(item["source"], item["source"])
+
+
+def top_story(pdf, item, lead=False):
+    pdf.set_font("Serif", "B", 17 if lead else 13.5)
+    pdf.multi_cell(0, 7.6 if lead else 6.2, item["title"], align="L", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Sans", "", 7.5)
+    pdf.set_text_color(90, 90, 90)
+    credit = source_label(item)
+    if item.get("also"):
+        credit += "   |   Also reported by " + ", ".join(DISPLAY_NAMES.get(s, s) for s in item["also"])
+    pdf.multi_cell(0, 4.5, credit, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(1.5)
+
     if item["summary"]:
-        pdf.set_font("Serif", "", 9.5)
-        pdf.multi_cell(0, 4.8, item["summary"], align="J", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Serif", "", 11 if lead else 10.5)
+        pdf.multi_cell(0, 5.5, truncate(item["summary"], TOP_SUMMARY_CHARS), align="J",
+                       new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(1.5)
+
     pdf.set_font("Sans", "", 6.5)
     pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(0, 3.6, f"{item['source']}   |   {item['link']}", new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(0, 3.8, f"Read the full story: {item['link']}", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0, 0, 0)
+    rule(pdf, 0.2, 4)
+
+
+def brief_item(pdf, item):
+    pdf.set_font("Serif", "B", 11)
+    pdf.multi_cell(0, 5.2, item["title"], align="L", new_x="LMARGIN", new_y="NEXT")
+    if item["summary"]:
+        pdf.set_font("Serif", "", 9.5)
+        pdf.multi_cell(0, 4.8, truncate(item["summary"], SUMMARY_CHARS), align="J",
+                       new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Sans", "", 6.5)
+    pdf.set_text_color(90, 90, 90)
+    pdf.multi_cell(0, 3.6, f"{source_label(item)}   |   {item['link']}", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     pdf.ln(3)
 
@@ -312,10 +452,13 @@ def build_pdf(sections, today: str) -> bytes:
 
     for section in sections:
         section_banner(pdf, section["name"])
-        for story in section["stories"]:
-            guardian_story(pdf, story)
-        for item in section["briefs"]:
-            brief_item(pdf, item)
+        for index, item in enumerate(section["items"]):
+            if section.get("top"):
+                top_story(pdf, item, lead=(index == 0))
+            elif item["kind"] == "story":
+                guardian_story(pdf, item)
+            else:
+                brief_item(pdf, item)
 
     return bytes(pdf.output())
 
@@ -360,7 +503,7 @@ def main():
 
     pdf_bytes = build_pdf(sections, today)
     send_to_kindle(pdf_bytes, today)
-    count = sum(len(s["stories"]) + len(s["briefs"]) for s in sections)
+    count = sum(len(s["items"]) for s in sections)
     print(f"Sent The Daily Digest for {today} ({count} stories) to {KINDLE_EMAIL}")
 
 
