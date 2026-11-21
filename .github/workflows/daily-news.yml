@@ -11,11 +11,15 @@ on:
   workflow_dispatch:         # run by hand from the Actions tab
 
 permissions:
-  contents: write            # needed to record the date of the last digest
+  contents: read
 
 jobs:
   send:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # needed to record the date of the last digest
+    outputs:
+      page: ${{ steps.upload.outcome }}
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
@@ -63,8 +67,10 @@ jobs:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           GUARDIAN_API_KEY: ${{ secrets.GUARDIAN_API_KEY }}
+          HTML_EMAIL_TO: ${{ secrets.HTML_EMAIL_TO }}
         run: python daily_news_kindle.py
 
+      # Recorded before publishing, so a web page problem can never cause a second Kindle send.
       - name: Record that today's digest was sent
         if: steps.gate.outputs.send == 'true'
         run: |
@@ -75,3 +81,25 @@ jobs:
           git add last_sent.txt
           git commit -m "Record digest sent for $TODAY" || echo "Nothing new to record"
           git push
+
+      - name: Package the web edition
+        id: upload
+        if: steps.gate.outputs.send == 'true' && hashFiles('docs/index.html') != ''
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: send
+    if: needs.send.outputs.page == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
