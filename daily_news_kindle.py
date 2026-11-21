@@ -8,8 +8,8 @@ Sources are prioritized: AP News first, then The Guardian, then BBC and NPR.
 Guardian stories pulled from the Guardian API show their standfirst and opening
 paragraph; everything else shows a short excerpt with a link.
 
-Each run also writes the same digest as a web page (docs/index.html) and can
-email it to you (set HTML_EMAIL_TO).
+Each run also writes the digest as a web page (docs/index.html) for GitHub Pages,
+and can email you the full version (set HTML_EMAIL_TO).
 """
 
 import datetime
@@ -31,9 +31,7 @@ RSS_FEEDS = {
     "BBC World": "https://feeds.bbci.co.uk/news/world/rss.xml",
     "NPR World": "https://feeds.npr.org/1004/rss.xml",
     "Guardian World": "https://www.theguardian.com/world/rss",
-    # AP's own RSS feeds were discontinued in 2024. This is AP's official Flipboard
-    # top stories feed; each item links to the story on apnews.com.
-    "AP News": "https://flipboard.com/@associatedpress/top-stories-u7govdf1z.rss",
+    "AP News": [],   # filled in below, once the topic sections are defined
 }
 RSS_ITEMS_PER_FEED = 25     # headlines read from each feed
 MAX_BRIEFS_PER_SECTION = 8  # short headlines shown per section
@@ -93,6 +91,31 @@ SECTIONS = [
     },
 ]
 # --------------------------------------------------------------------------
+
+USER_AGENT = "Mozilla/5.0 (compatible; DailyDigest/1.0; personal news digest)"
+
+
+def google_news_ap(query=""):
+    """A Google News search limited to apnews.com, for the last day.
+
+    AP shut down its own RSS feeds in 2024, and its website refuses automated
+    requests. A Google News search limited to apnews.com is the working
+    replacement: each item is an AP headline that links through to apnews.com.
+    """
+    terms = f"site:apnews.com ({query}) when:1d" if query else "site:apnews.com when:1d"
+    return "https://news.google.com/rss/search?" + urllib.parse.urlencode(
+        {"q": terms, "hl": "en-US", "gl": "US", "ceid": "US:en"})
+
+
+# AP News is read from several places, in this order:
+#   1. AP's top stories of the last day (Google News)
+#   2. AP's official Flipboard feed (a backup source of AP headlines)
+#   3. One AP search per topic, so France, Latin America, Middle East and Gangs
+#      each have enough AP stories to choose from
+RSS_FEEDS["AP News"] = (
+    [google_news_ap(), "https://flipboard.com/@AssociatedPress.rss"]
+    + [google_news_ap(spec["guardian_query"]) for spec in SECTIONS]
+)
 
 # ---- Credentials (set as GitHub secrets) ----------------------------------
 KINDLE_EMAIL = os.environ.get("KINDLE_EMAIL", "")
@@ -200,28 +223,53 @@ def source_rank(name):
     return SOURCE_ORDER.index(name) if name in SOURCE_ORDER else len(SOURCE_ORDER)
 
 
+def tidy_google_item(title, summary):
+    """Google News adds the outlet name to titles and repeats the title in the description."""
+    raw_title = title
+    title = re.sub(r"\s+[-\u2013\u2014]\s+(?:The )?(?:AP News|Associated Press)$", "", title).strip()
+    for prefix in (raw_title, title):
+        if prefix and summary.startswith(prefix):
+            summary = summary[len(prefix):].strip()
+            break
+    summary = re.sub(r"\s*(?:The )?(?:AP News|Associated Press)$", "", summary).strip()
+    return title, (summary if len(summary) >= 25 else "")
+
+
 def fetch_rss_by_source():
     """Return {source name: [items in the feed's own order]}, highest-priority source first."""
     feeds = {}
     for name in sorted(RSS_FEEDS, key=source_rank):
-        try:
-            parsed = feedparser.parse(RSS_FEEDS[name])
-        except Exception as exc:
-            print(f"WARNING: could not read {name}: {exc}", file=sys.stderr)
-            continue
-        items = []
-        for entry in parsed.entries[:RSS_ITEMS_PER_FEED]:
-            title = clean(entry.get("title", ""))
-            link = entry.get("link", "")
-            if not title or not link:
+        urls = RSS_FEEDS[name] if isinstance(RSS_FEEDS[name], list) else [RSS_FEEDS[name]]
+        items, seen = [], set()
+        for number, url in enumerate(urls, 1):
+            try:
+                parsed = feedparser.parse(url, agent=USER_AGENT)
+            except Exception as exc:
+                print(f"WARNING: {name} feed {number}: could not read ({exc})", file=sys.stderr)
                 continue
-            items.append({
-                "title": title,
-                "summary": truncate(clean(entry.get("summary", "")), TOP_SUMMARY_CHARS),
-                "link": link,
-                "source": name,
-                "kind": "brief",
-            })
+
+            got = 0
+            for entry in parsed.entries[:RSS_ITEMS_PER_FEED]:
+                title = clean(entry.get("title", ""))
+                link = entry.get("link", "")
+                summary = clean(entry.get("summary", ""))
+                if "news.google.com" in url:
+                    title, summary = tidy_google_item(title, summary)
+                key = normalize_link(link)
+                if not title or not link or key in seen:
+                    continue
+                seen.add(key)
+                got += 1
+                items.append({
+                    "title": title,
+                    "summary": truncate(summary, TOP_SUMMARY_CHARS),
+                    "link": link,
+                    "source": name,
+                    "kind": "brief",
+                })
+            # One line per feed, so a feed that stops working is easy to spot in the run log.
+            print(f"Feed check: {name} #{number}: {got} items (HTTP {parsed.get('status', 'n/a')})")
+
         if items:
             feeds[name] = items
         else:
@@ -248,13 +296,19 @@ def pick_top_stories(feeds):
             top.append(dict(item, _tokens=tokens, also=[]))
             taken += 1
 
-    # List which other sources also cover each top story.
+    # List which other sources also cover each top story. AP items from Google News are
+    # headline only, so if another source has an excerpt for the same story, borrow it
+    # (and say where it came from).
     for story in top:
         for source, items in feeds.items():
             if source == story["source"]:
                 continue
-            if any(same_story(story["_tokens"], story_tokens(i["title"])) for i in items):
+            match = next((i for i in items if same_story(story["_tokens"], story_tokens(i["title"]))), None)
+            if match:
                 story["also"].append(source)
+                if not story["summary"] and match["summary"]:
+                    story["summary"] = match["summary"]
+                    story["summary_from"] = source
     return top
 
 
@@ -405,16 +459,29 @@ def source_label(item):
     return DISPLAY_NAMES.get(item["source"], item["source"])
 
 
+def link_text(item, prefix=""):
+    """What to print for a link. Google News links are long and unreadable, so shorten them."""
+    if "news.google.com" in item["link"]:
+        return f"{prefix}apnews.com (opens through Google News)"
+    return f"{prefix}{item['link']}"
+
+
+def credit_line(item):
+    credit = source_label(item)
+    if item.get("also"):
+        credit += "   |   Also reported by " + ", ".join(DISPLAY_NAMES.get(s, s) for s in item["also"])
+    if item.get("summary_from"):
+        credit += "   |   Excerpt from " + DISPLAY_NAMES.get(item["summary_from"], item["summary_from"])
+    return credit
+
+
 def top_story(pdf, item, lead=False):
     pdf.set_font("Serif", "B", 17 if lead else 13.5)
     pdf.multi_cell(0, 7.6 if lead else 6.2, item["title"], align="L", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Sans", "", 7.5)
     pdf.set_text_color(90, 90, 90)
-    credit = source_label(item)
-    if item.get("also"):
-        credit += "   |   Also reported by " + ", ".join(DISPLAY_NAMES.get(s, s) for s in item["also"])
-    pdf.multi_cell(0, 4.5, credit, new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(0, 4.5, credit_line(item), new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     pdf.ln(1.5)
 
@@ -426,7 +493,8 @@ def top_story(pdf, item, lead=False):
 
     pdf.set_font("Sans", "", 6.5)
     pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(0, 3.8, f"Read the full story: {item['link']}", new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(0, 3.8, link_text(item, "Read the full story: "), link=item["link"],
+                   new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     rule(pdf, 0.2, 4)
 
@@ -440,7 +508,8 @@ def brief_item(pdf, item):
                        new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Sans", "", 6.5)
     pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(0, 3.6, f"{source_label(item)}   |   {item['link']}", new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(0, 3.6, link_text(item, f"{source_label(item)}   |   "), link=item["link"],
+                   new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     pdf.ln(3)
 
@@ -498,6 +567,7 @@ article p { margin:0 0 8px; }
 .standfirst { font-weight:bold; }
 .more { font-family:Helvetica, Arial, sans-serif; font-size:.75rem; }
 .more a { color:var(--muted); }
+footer a { color:var(--muted); }
 footer { margin-top:40px; font-family:Helvetica, Arial, sans-serif; font-size:.72rem; color:var(--muted); text-align:center; }
 """
 
@@ -510,12 +580,14 @@ def slug(name):
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
 
-def html_item(item, top=False, lead=False):
+def html_item(item, top=False, lead=False, public=False):
     credit = source_label(item)
     if item.get("kind") == "story" and item.get("byline"):
         credit += f" \u00b7 By {item['byline']}"
     if item.get("also"):
         credit += " \u00b7 Also reported by " + ", ".join(DISPLAY_NAMES.get(s, s) for s in item["also"])
+    if item.get("summary_from"):
+        credit += " \u00b7 Excerpt from " + DISPLAY_NAMES.get(item["summary_from"], item["summary_from"])
 
     body = ""
     if item.get("kind") == "story":
@@ -534,19 +606,21 @@ def html_item(item, top=False, lead=False):
             f'</article>')
 
 
-def build_html(sections, today: str) -> str:
+def build_html(sections, today: str, public: bool = False) -> str:
     nav = "".join(f'<a href="#{slug(s["name"])}">{esc(s["name"])}</a>' for s in sections)
     blocks = []
     for section in sections:
         is_top = bool(section.get("top"))
-        items = "".join(html_item(i, top=is_top, lead=(is_top and n == 0))
+        items = "".join(html_item(i, top=is_top, lead=(is_top and n == 0), public=public)
                         for n, i in enumerate(section["items"]))
         blocks.append(f'<section id="{slug(section["name"])}"><h2>{esc(section["name"])}</h2>{items}</section>')
 
+    robots = '<meta name="robots" content="noindex, nofollow">\n' if public else ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+{robots}
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The Daily Digest \u2013 {esc(today)}</title>
 <style>{HTML_CSS}</style>
@@ -557,7 +631,7 @@ def build_html(sections, today: str) -> str:
 <div class="dateline">{esc(today)} &nbsp;|&nbsp; Morning Edition</div></header>
 <nav>{nav}</nav>
 {"".join(blocks)}
-<footer>Excerpts and links from AP News, The Guardian, BBC News and NPR. For personal reading.</footer>
+<footer>Headlines, excerpts and links from AP News, The Guardian, BBC News and NPR. Guardian content is provided through the <a href="https://open-platform.theguardian.com/">Guardian Open Platform</a>. Follow the links to read the full stories on the publishers\u2019 sites.</footer>
 </div>
 </body>
 </html>
@@ -630,26 +704,25 @@ def main():
         sys.exit("No stories could be fetched. Nothing was sent.")
 
     pdf_bytes = build_pdf(sections, today)
-    html_doc = build_html(sections, today)
 
     # The web edition is a bonus: a problem here must never stop the Kindle delivery.
+    # The saved page is the public version (it asks search engines not to list it).
     try:
-        save_html(html_doc)
+        save_html(build_html(sections, today, public=True))
         print(f"Saved web edition to {HTML_OUTPUT_PATH}")
     except Exception as exc:
         print(f"WARNING: could not save the web edition: {exc}", file=sys.stderr)
 
     send_to_kindle(pdf_bytes, today)
     count = sum(len(s["items"]) for s in sections)
-    print(f"Sent The Daily Digest for {today} ({count} stories) to {KINDLE_EMAIL}")
+    print(f"Sent The Daily Digest for {today} ({count} stories) to Kindle")
 
     if HTML_EMAIL_TO:
         try:
-            send_html_email(html_doc, today)
-            print(f"Emailed the web edition to {HTML_EMAIL_TO}")
+            send_html_email(build_html(sections, today), today)   # full private version
+            print("Emailed the web edition")
         except Exception as exc:
             print(f"WARNING: could not email the web edition: {exc}", file=sys.stderr)
-
 
 if __name__ == "__main__":
     main()

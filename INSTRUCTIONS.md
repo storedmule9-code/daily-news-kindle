@@ -2,9 +2,9 @@
 
 Every morning your Kindle receives a newspaper-style PDF. It opens with **Top Stories**, then four topic sections: **France**, **Latin America**, **Middle East**, and **Gangs**. A story that appears under Top Stories is not repeated in a topic section.
 
-Sources are prioritized: **AP News first, then The Guardian, then BBC and NPR.** This order applies to Top Stories and inside every topic section. Guardian stories in the topic sections show a headline, standfirst, and opening paragraph. Everything else shows a short excerpt and a link. When several sources cover the same story, it is shown once, from the highest-priority source, with the others listed under it ("Also reported by ...").
+Sources are prioritized: **AP News first, then The Guardian, then BBC and NPR.** This order applies to Top Stories and inside every topic section. Guardian stories in the topic sections show a headline, standfirst, and opening paragraph. Everything else shows a short excerpt and a link. AP stories are mostly a headline and a link, because AP doesn't offer excerpts; when another source covers the same story, its excerpt is borrowed and labeled ("Excerpt from ..."). When several sources cover the same story, it is shown once, from the highest-priority source, with the others listed under it ("Also reported by ...").
 
-Each run also builds a **web edition**: the same digest as a web page, with links, saved in your repository as `docs/index.html`. You can also have it emailed to you (see Part 9).
+Each run also publishes a **web edition**: the same digest as a web page with links, at a web address you can open on any device (see Part 9).
 
 The job runs on GitHub's servers, so your computer can be off. Setup is done entirely in a web browser.
 
@@ -58,7 +58,7 @@ Gmail doesn't allow ordinary passwords for automated sending, so you need a sepa
 | `SENDER_EMAIL` | your Gmail address | Yes |
 | `SMTP_PASSWORD` | the 16-character App Password | Yes |
 | `GUARDIAN_API_KEY` | the key from Part 2 | Yes, for Guardian stories |
-| `HTML_EMAIL_TO` | address to email the web edition to | No |
+| `HTML_EMAIL_TO` | address to email the full web edition to | No |
 
 Once saved, GitHub hides these values. You can replace them but never view them again.
 
@@ -68,7 +68,7 @@ Once saved, GitHub hides these values. You can replace them but never view them 
 2. Drag in `daily_news_kindle.py`, `requirements.txt`, and `INSTRUCTIONS.md`.
 3. Click **Commit changes**.
 
-## Part 7: Add the schedule file (version 11)
+## Part 7: Add the schedule file (version 15)
 
 The schedule file is in the `.github/workflows` folder of the package. Because that folder name starts with a dot, macOS hides it by default. Press Cmd+Shift+. in Finder to show hidden folders, or copy the text from the package.
 
@@ -93,19 +93,49 @@ Common problems:
 - *"Missing required settings"*: a secret name is misspelled. The names must match exactly.
 - *Authentication error*: you used your normal Gmail password. Use the App Password.
 - *Guardian stories missing*: the Guardian key is missing or mistyped. Headlines still send.
+- *AP News missing*: open the run, then the **Build the digest and send it to Kindle** step. Near the top, one line per feed reads like `Feed check: AP News #1: 20 items (HTTP 200)`. If every AP line says 0 items, AP's sources are blocking the request that day. Copy those lines to me and I'll adjust. The digest still sends without AP.
 - *Nothing on the Kindle*: your Gmail address isn't on the Kindle's approved list.
 
-## Part 9 (optional): Read the web edition
+## Part 9: Put the web edition online (GitHub Pages)
 
-Every run saves the web edition as `docs/index.html` in your repository. There are three ways to read it:
+Every morning the digest is also published to a web address like `https://YOUR-USERNAME.github.io/daily-digest/`. Bookmark it on your phone and computer.
 
-**Email it to yourself (easiest).** Add a secret called `HTML_EMAIL_TO` (Settings, Secrets and variables, Actions) with the address that should receive it. Each morning that address gets an email showing the web edition, with the .html file attached to open in a browser. Leave the secret out and no email is sent.
+**Read this first: the page is public.** On a free GitHub account, Pages works only for public repositories. That means anyone who has the link can open the page, and anyone can see the repository's files. To reduce the exposure:
 
-**Download it from GitHub.** Open the repository, go to `docs`, click `index.html`, then click the download icon. Save it and open it in your browser. GitHub shows only the page's source code when you view the file there, so download it to see the formatted page.
+- The page shows headlines, the publishers' short excerpts, Guardian standfirsts and opening paragraphs, and links to the full stories. The Guardian's developer key is meant for non-commercial use with credit to the Guardian, and the page includes that credit. Keep the page free of ads and don't charge for it. Check the Guardian's Open Platform terms if you plan to change that.
+- The page asks search engines not to list it. This is a request, not protection, so don't treat the address as private.
+- Your secrets (Kindle address, email, passwords, API key) stay hidden even in a public repository. GitHub never shows their values, and the program no longer prints your addresses in the run log.
 
-**Host it as a web page (GitHub Pages).** Go to Settings, then Pages, choose the `main` branch and the `/docs` folder, and save. GitHub gives you a web address that always shows the latest edition. Be aware that on a free GitHub account, Pages works only for **public** repositories. A public repository, and the page itself, would be visible to anyone, and the page contains news excerpts you don't own. I recommend email or download instead unless you have a paid plan with private Pages.
+**Step 1: Check the repository before making it public**
 
-If the web edition can't be saved or emailed, the digest still goes to your Kindle. The problem appears as a warning in the run log.
+Open the repository's main page and look at the file list. It should contain only: `daily_news_kindle.py`, `requirements.txt`, `INSTRUCTIONS.md`, `last_sent.txt`, and the `.github` folder. If you ever uploaded a `.env` file or anything with a password or personal address, don't make this repository public. Create a new repository instead, upload the v14 files, and add the secrets again.
+
+**Step 2: Update the files**
+
+Replace `daily_news_kindle.py` and `.github/workflows/daily-news.yml` with the v14 versions. Open each file, click the pencil icon, select all, paste the new contents, and click **Commit changes**.
+
+**Step 3: Make the repository public**
+
+1. Click **Settings**, then scroll to the **Danger Zone** at the bottom of General.
+2. Click **Change visibility**, then **Make public**, and confirm.
+
+**Step 4: Turn on Pages**
+
+1. In Settings, click **Pages** in the left panel.
+2. Under **Build and deployment**, set **Source** to **GitHub Actions**.
+
+**Step 5: Publish the first edition**
+
+1. Click the **Actions** tab, then **Daily Digest to Kindle**, then **Run workflow**.
+2. When both jobs show a green checkmark (the second one is called **deploy**), open the **deploy** job. It shows your page's web address. You can also find it in Settings, then Pages.
+
+This run sends a digest to your Kindle as well. After that, the page updates by itself each morning.
+
+**Taking it offline:** in Settings, then Pages, unpublish the site, or make the repository private again.
+
+**Optional: email the web edition to yourself.** Add a secret called `HTML_EMAIL_TO` with the address that should receive it. Each morning that address gets an email showing the web edition, with the .html file attached. Leave the secret out and no email is sent.
+
+If the web edition can't be built or published, the digest still goes to your Kindle. The problem appears as a warning or a failed **deploy** job in the run log.
 
 ## Daily use
 
@@ -123,7 +153,7 @@ Nothing else is needed. The digest is sent at 6:30 AM Paris time, and the schedu
 - **Source priority:** edit `SOURCE_ORDER` in the same file. The first name has the highest priority.
 - **Number of top stories:** edit `TOP_PER_SOURCE`, which sets how many lead stories each source can contribute to Top Stories. The default is 4 from AP, 3 from the Guardian, 2 from BBC, and 1 from NPR.
 - **Other Headlines section:** set `INCLUDE_OTHER_HEADLINES = True` to add a final section for stories that fit no topic. It is off by default.
-- **News sources:** edit `RSS_FEEDS` in the same file. AP News is included through AP's official Flipboard feed, because AP's own RSS feeds were discontinued in 2024.
+- **News sources:** edit `RSS_FEEDS` in the same file. AP shut down its own RSS feeds in 2024, so AP News is read through a Google News search limited to apnews.com (plus AP's official Flipboard feed as a backup, and one AP search for each of your topics). AP links open through Google News and forward to apnews.com.
 - **Send it now:** go to the Actions tab and run the workflow manually.
 - **Pause it:** in the Actions tab, click the workflow, then the **...** menu, then **Disable workflow**.
 
@@ -133,5 +163,6 @@ Nothing else is needed. The digest is sent at 6:30 AM Paris time, and the schedu
 - The Latin America section includes any story that mentions Latin America or one of its countries (all 20 Spanish- and Portuguese-speaking countries plus Haiti), or a common adjective such as "Brazilian" or "Mexican", even if the story also covers the United States. Puerto Rico and Guyana are not included. To change which countries count, edit the Latin America `pattern` and `guardian_query` in the SECTIONS list.
 - Gang stories are matched on specific terms such as "gang violence," "gang members," "drug cartel," and MS-13. To change them, edit the Gangs `pattern` and `guardian_query` in the SECTIONS list.
 - GitHub turns off scheduled jobs in repositories with no activity for 60 days. If the digest stops, check the Actions tab for a prompt to re-enable it.
-- The text shown is the Guardian's own standfirst and opening paragraph, for your personal reading. Use the links to read the full stories on the Guardian's site.
+- The Guardian text shown is its own standfirst and opening paragraph. Use the links to read the full stories on the Guardian's site.
+- Google sorts AP results by relevance rather than time, and AP stories are limited to the last day. That suits a morning digest, but the AP order is Google's idea of the most important stories, not AP's own front page.
 - Arabic and other non-Latin scripts may not display correctly in the PDF. English-language stories display normally.
