@@ -7,6 +7,9 @@ A story shown under Top Stories is not repeated in a topic section.
 Sources are prioritized: AP News first, then The Guardian, then BBC and NPR.
 Guardian stories pulled from the Guardian API show their standfirst and opening
 paragraph; everything else shows a short excerpt with a link.
+
+Each run also writes the same digest as a web page (docs/index.html) and can
+email it to you (set HTML_EMAIL_TO).
 """
 
 import datetime
@@ -98,6 +101,8 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 GUARDIAN_API_KEY = os.environ.get("GUARDIAN_API_KEY", "")
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+HTML_OUTPUT_PATH = os.environ.get("HTML_OUTPUT_PATH", "docs/index.html")
+HTML_EMAIL_TO = os.environ.get("HTML_EMAIL_TO", "")   # optional: email the web edition here
 # --------------------------------------------------------------------------
 
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
@@ -463,6 +468,129 @@ def build_pdf(sections, today: str) -> bytes:
     return bytes(pdf.output())
 
 
+# ---- Web edition (HTML) --------------------------------------------------
+
+HTML_CSS = """
+:root { --bg:#fbfaf7; --fg:#1a1a1a; --muted:#666; --rule:#1a1a1a; --soft:#d9d6cf; color-scheme: light dark; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#16161a; --fg:#ececec; --muted:#a0a0a8; --rule:#ececec; --soft:#3a3a42; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg);
+       font-family: Georgia, "Times New Roman", serif; line-height:1.55; }
+.page { max-width:720px; margin:0 auto; padding:24px 18px 64px; }
+.masthead { text-align:center; border-bottom:3px double var(--rule); padding-bottom:10px; margin-bottom:14px; }
+.masthead h1 { margin:0; font-size:clamp(2rem, 8vw, 3.2rem); letter-spacing:.04em; }
+.masthead .dateline { font-family:Helvetica, Arial, sans-serif; font-size:.72rem;
+                      letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin-top:6px; }
+nav { text-align:center; margin:0 0 8px; line-height:2;
+      font-family:Helvetica, Arial, sans-serif; font-size:.78rem; letter-spacing:.06em; text-transform:uppercase; }
+nav a { display:inline-block; margin:0 9px; color:var(--fg); text-decoration:none; border-bottom:1px solid var(--soft); }
+h2 { font-family:Helvetica, Arial, sans-serif; font-size:.95rem; letter-spacing:.12em; text-transform:uppercase;
+     border-bottom:2px solid var(--rule); padding-bottom:4px; margin:34px 0 14px; }
+article { padding:14px 0; border-bottom:1px solid var(--soft); }
+article h3 { margin:0 0 4px; font-size:1.25rem; line-height:1.25; }
+article.lead h3 { font-size:1.75rem; }
+article h3 a { color:var(--fg); text-decoration:none; }
+article h3 a:hover { text-decoration:underline; }
+.credit { font-family:Helvetica, Arial, sans-serif; font-size:.72rem; color:var(--muted); margin:0 0 8px; }
+article p { margin:0 0 8px; }
+.standfirst { font-weight:bold; }
+.more { font-family:Helvetica, Arial, sans-serif; font-size:.75rem; }
+.more a { color:var(--muted); }
+footer { margin-top:40px; font-family:Helvetica, Arial, sans-serif; font-size:.72rem; color:var(--muted); text-align:center; }
+"""
+
+
+def esc(text):
+    return html.escape(text or "", quote=True)
+
+
+def slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def html_item(item, top=False, lead=False):
+    credit = source_label(item)
+    if item.get("kind") == "story" and item.get("byline"):
+        credit += f" \u00b7 By {item['byline']}"
+    if item.get("also"):
+        credit += " \u00b7 Also reported by " + ", ".join(DISPLAY_NAMES.get(s, s) for s in item["also"])
+
+    body = ""
+    if item.get("kind") == "story":
+        if item.get("standfirst"):
+            body += f'<p class="standfirst">{esc(item["standfirst"])}</p>'
+        if item.get("opening"):
+            body += f'<p>{esc(item["opening"])}</p>'
+    elif item.get("summary"):
+        body += f'<p>{esc(truncate(item["summary"], TOP_SUMMARY_CHARS if top else SUMMARY_CHARS))}</p>'
+
+    cls = "lead" if lead else ""
+    return (f'<article class="{cls}">'
+            f'<h3><a href="{esc(item["link"])}">{esc(item["title"])}</a></h3>'
+            f'<p class="credit">{esc(credit)}</p>{body}'
+            f'<p class="more"><a href="{esc(item["link"])}">Read the full story</a></p>'
+            f'</article>')
+
+
+def build_html(sections, today: str) -> str:
+    nav = "".join(f'<a href="#{slug(s["name"])}">{esc(s["name"])}</a>' for s in sections)
+    blocks = []
+    for section in sections:
+        is_top = bool(section.get("top"))
+        items = "".join(html_item(i, top=is_top, lead=(is_top and n == 0))
+                        for n, i in enumerate(section["items"]))
+        blocks.append(f'<section id="{slug(section["name"])}"><h2>{esc(section["name"])}</h2>{items}</section>')
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Daily Digest \u2013 {esc(today)}</title>
+<style>{HTML_CSS}</style>
+</head>
+<body>
+<div class="page">
+<header class="masthead"><h1>THE DAILY DIGEST</h1>
+<div class="dateline">{esc(today)} &nbsp;|&nbsp; Morning Edition</div></header>
+<nav>{nav}</nav>
+{"".join(blocks)}
+<footer>Excerpts and links from AP News, The Guardian, BBC News and NPR. For personal reading.</footer>
+</div>
+</body>
+</html>
+"""
+
+
+def save_html(html_doc: str):
+    folder = os.path.dirname(HTML_OUTPUT_PATH)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    with open(HTML_OUTPUT_PATH, "w", encoding="utf-8") as handle:
+        handle.write(html_doc)
+
+
+def send_html_email(html_doc: str, today: str):
+    msg = EmailMessage()
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = HTML_EMAIL_TO
+    msg["Subject"] = f"The Daily Digest, web edition: {today}"
+    msg.set_content("This email contains the web edition. Open the attached .html file in a browser.")
+    msg.add_alternative(html_doc, subtype="html")
+    msg.add_attachment(
+        html_doc.encode("utf-8"),
+        maintype="text",
+        subtype="html",
+        filename=f"Daily-Digest-{today}.html",
+    )
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SENDER_EMAIL, SMTP_PASSWORD)
+        server.send_message(msg)
+
+
 # ---- Delivery ---------------------------------------------------------------
 
 def send_to_kindle(pdf_bytes: bytes, today: str):
@@ -502,9 +630,25 @@ def main():
         sys.exit("No stories could be fetched. Nothing was sent.")
 
     pdf_bytes = build_pdf(sections, today)
+    html_doc = build_html(sections, today)
+
+    # The web edition is a bonus: a problem here must never stop the Kindle delivery.
+    try:
+        save_html(html_doc)
+        print(f"Saved web edition to {HTML_OUTPUT_PATH}")
+    except Exception as exc:
+        print(f"WARNING: could not save the web edition: {exc}", file=sys.stderr)
+
     send_to_kindle(pdf_bytes, today)
     count = sum(len(s["items"]) for s in sections)
     print(f"Sent The Daily Digest for {today} ({count} stories) to {KINDLE_EMAIL}")
+
+    if HTML_EMAIL_TO:
+        try:
+            send_html_email(html_doc, today)
+            print(f"Emailed the web edition to {HTML_EMAIL_TO}")
+        except Exception as exc:
+            print(f"WARNING: could not email the web edition: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

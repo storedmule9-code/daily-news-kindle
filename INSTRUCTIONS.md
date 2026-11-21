@@ -4,6 +4,8 @@ Every morning your Kindle receives a newspaper-style PDF. It opens with **Top St
 
 Sources are prioritized: **AP News first, then The Guardian, then BBC and NPR.** This order applies to Top Stories and inside every topic section. Guardian stories in the topic sections show a headline, standfirst, and opening paragraph. Everything else shows a short excerpt and a link. When several sources cover the same story, it is shown once, from the highest-priority source, with the others listed under it ("Also reported by ...").
 
+Each run also builds a **web edition**: the same digest as a web page, with links, saved in your repository as `docs/index.html`. You can also have it emailed to you (see Part 9).
+
 The job runs on GitHub's servers, so your computer can be off. Setup is done entirely in a web browser.
 
 ## Before you start
@@ -56,6 +58,7 @@ Gmail doesn't allow ordinary passwords for automated sending, so you need a sepa
 | `SENDER_EMAIL` | your Gmail address | Yes |
 | `SMTP_PASSWORD` | the 16-character App Password | Yes |
 | `GUARDIAN_API_KEY` | the key from Part 2 | Yes, for Guardian stories |
+| `HTML_EMAIL_TO` | address to email the web edition to | No |
 
 Once saved, GitHub hides these values. You can replace them but never view them again.
 
@@ -91,6 +94,18 @@ Common problems:
 - *Authentication error*: you used your normal Gmail password. Use the App Password.
 - *Guardian stories missing*: the Guardian key is missing or mistyped. Headlines still send.
 - *Nothing on the Kindle*: your Gmail address isn't on the Kindle's approved list.
+
+## Part 9 (optional): Read the web edition
+
+Every run saves the web edition as `docs/index.html` in your repository. There are three ways to read it:
+
+**Email it to yourself (easiest).** Add a secret called `HTML_EMAIL_TO` (Settings, Secrets and variables, Actions) with the address that should receive it. Each morning that address gets an email showing the web edition, with the .html file attached to open in a browser. Leave the secret out and no email is sent.
+
+**Download it from GitHub.** Open the repository, go to `docs`, click `index.html`, then click the download icon. Save it and open it in your browser. GitHub shows only the page's source code when you view the file there, so download it to see the formatted page.
+
+**Host it as a web page (GitHub Pages).** Go to Settings, then Pages, choose the `main` branch and the `/docs` folder, and save. GitHub gives you a web address that always shows the latest edition. Be aware that on a free GitHub account, Pages works only for **public** repositories. A public repository, and the page itself, would be visible to anyone, and the page contains news excerpts you don't own. I recommend email or download instead unless you have a paid plan with private Pages.
+
+If the web edition can't be saved or emailed, the digest still goes to your Kindle. The problem appears as a warning in the run log.
 
 ## Daily use
 
