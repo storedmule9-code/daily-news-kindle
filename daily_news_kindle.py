@@ -13,6 +13,8 @@ and can email you the full version (set HTML_EMAIL_TO).
 """
 
 import base64
+import calendar
+import collections
 import datetime
 import html
 import json
@@ -20,8 +22,12 @@ import os
 import re
 import smtplib
 import sys
+import threading
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor
 from email.message import EmailMessage
 
@@ -42,6 +48,7 @@ OPENING_CHARS = 700         # length of Guardian opening paragraph shown
 TOP_SUMMARY_CHARS = 500     # length of excerpts under Top Stories
 AP_DESCRIPTION_FETCHES = 60  # how many AP articles to check for AP's own description
 AP_FETCH_TIMEOUT = 10        # seconds to wait for each AP page
+MAX_AGE_HOURS = 36           # stories published longer ago than this are left out
 
 # Source priority, highest first: AP News, then The Guardian, then the rest.
 SOURCE_ORDER = ["AP News", "Guardian World", "BBC World", "NPR World"]
@@ -155,6 +162,35 @@ def truncate(text: str, limit: int) -> str:
     return text[:limit].rsplit(" ", 1)[0] + "..."
 
 
+def iso_ts(text):
+    """Unix time from an ISO date such as the Guardian's, or 0 if missing."""
+    try:
+        return int(datetime.datetime.fromisoformat((text or "").replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return 0
+
+
+def entry_ts(entry):
+    """Unix time of an RSS entry's publication date, or 0 if missing."""
+    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+    return calendar.timegm(parsed) if parsed else 0
+
+
+def is_fresh(item, now):
+    """Undated items are kept (and sorted last); dated items older than MAX_AGE_HOURS are dropped."""
+    ts = item.get("ts", 0)
+    return (not ts) or now - ts <= MAX_AGE_HOURS * 3600
+
+
+def item_date(item):
+    """Publication time in Paris time, such as 'Sat Nov 21, 14:05', or '' if unknown."""
+    ts = item.get("ts", 0)
+    if not ts:
+        return ""
+    when = datetime.datetime.fromtimestamp(ts, ZoneInfo("Europe/Paris"))
+    return f"{when:%a} {when:%b} {when.day}, {when:%H:%M}"
+
+
 # ---- Content gathering -----------------------------------------------------
 
 def fetch_guardian(query, section, count):
@@ -167,6 +203,7 @@ def fetch_guardian(query, section, count):
         "order-by": "newest",
         "page-size": str(count),
         "show-fields": "headline,trailText,bodyText,byline",
+        "from-date": (datetime.date.today() - datetime.timedelta(days=1)).isoformat(),
         "api-key": GUARDIAN_API_KEY,
     }
     if section:
@@ -190,6 +227,7 @@ def fetch_guardian(query, section, count):
             "standfirst": clean(fields.get("trailText", "")),
             "opening": truncate(paragraphs[0], OPENING_CHARS) if paragraphs else "",
             "link": result.get("webUrl", ""),
+            "ts": iso_ts(result.get("webPublicationDate", "")),
         })
     return stories
 
@@ -270,12 +308,13 @@ def fetch_rss_by_source():
                     "link": link,
                     "source": name,
                     "kind": "brief",
+                    "ts": entry_ts(entry),
                 })
             # One line per feed, so a feed that stops working is easy to spot in the run log.
             print(f"Feed check: {name} #{number}: {got} items (HTTP {parsed.get('status', 'n/a')})")
 
         if items:
-            feeds[name] = items
+            feeds[name] = sorted(items, key=lambda i: i.get("ts", 0), reverse=True)
         else:
             print(f"WARNING: no items found for {name}", file=sys.stderr)
     return feeds
@@ -287,18 +326,18 @@ def pick_top_stories(feeds):
     A lead story that another source also covers is shown once, with the other
     sources listed under it.
     """
-    top = []
-    for source in sorted(feeds, key=source_rank):
-        limit = TOP_PER_SOURCE.get(source, 1)
-        taken = 0
-        for item in feeds[source][: limit + 3]:
-            if taken >= limit:
-                break
-            tokens = story_tokens(item["title"])
-            if any(same_story(t["_tokens"], tokens) for t in top):
-                continue   # already covered by a higher-priority source
-            top.append(dict(item, _tokens=tokens, also=[]))
-            taken += 1
+    pool = [item for items in feeds.values() for item in items]
+    pool.sort(key=lambda i: (-i.get("ts", 0), source_rank(i["source"])))
+    top, taken = [], {}
+    for item in pool:
+        source = item["source"]
+        if taken.get(source, 0) >= TOP_PER_SOURCE.get(source, 1):
+            continue
+        tokens = story_tokens(item["title"])
+        if any(same_story(t["_tokens"], tokens) for t in top):
+            continue   # already covered by a newer or higher-priority source
+        top.append(dict(item, _tokens=tokens, also=[]))
+        taken[source] = taken.get(source, 0) + 1
 
     # List which other sources also cover each top story. AP items from Google News are
     # headline only, so if another source has an excerpt for the same story, borrow it
@@ -342,16 +381,34 @@ def ap_direct_url(link):
     return link
 
 
+AP_STATS = collections.Counter()
+AP_LOCK = threading.Lock()
+
+
+def ap_note(reason):
+    with AP_LOCK:
+        AP_STATS[reason] += 1
+
+
 def fetch_ap_description(link):
     """Return AP's own short description of an article (its page metadata), or ''."""
     url = ap_direct_url(link)
+    if "news.google.com" in url:
+        ap_note("could not find the apnews.com address in the link")
+        return ""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=AP_FETCH_TIMEOUT) as resp:
-            if "apnews.com" not in urllib.parse.urlsplit(resp.geturl()).netloc:
+            final_host = urllib.parse.urlsplit(resp.geturl()).netloc
+            if "apnews.com" not in final_host:
+                ap_note(f"page redirected to {final_host or 'another site'}")
                 return ""
             page = resp.read(120000).decode("utf-8", "replace")
-    except Exception:
+    except urllib.error.HTTPError as exc:
+        ap_note(f"AP page refused the request (HTTP {exc.code})")
+        return ""
+    except Exception as exc:
+        ap_note(f"AP page could not be read ({type(exc).__name__})")
         return ""
     patterns = (
         r'<meta[^>]+(?:name|property)=["\'](?:og:)?description["\'][^>]*content=["\']([^"\']+)["\']',
@@ -362,7 +419,9 @@ def fetch_ap_description(link):
         if m:
             text = clean(m.group(1))
             if len(text) >= 40:
+                ap_note("description found")
                 return text
+    ap_note("AP page had no description tag")
     return ""
 
 
@@ -371,6 +430,7 @@ def add_ap_descriptions(feeds):
     items = feeds.get("AP News", [])[:AP_DESCRIPTION_FETCHES]
     if not items:
         return
+    AP_STATS.clear()
     with ThreadPoolExecutor(max_workers=8) as pool:
         descriptions = list(pool.map(lambda i: fetch_ap_description(i["link"]), items))
     found = 0
@@ -379,11 +439,16 @@ def add_ap_descriptions(feeds):
             item["summary"] = truncate(desc, TOP_SUMMARY_CHARS)
             found += 1
     print(f"AP descriptions: {found} of {len(items)} AP stories had one")
+    for reason, count in AP_STATS.most_common():
+        print(f"  AP detail: {reason}: {count}")
 
 
 def build_digest():
     """Return the sections to print, in order: Top Stories, then each topic."""
     feeds = fetch_rss_by_source()
+    now = time.time()
+    feeds = {n: [i for i in items if is_fresh(i, now)] for n, items in feeds.items()}
+    feeds = {n: items for n, items in feeds.items() if items}
     add_ap_descriptions(feeds)
     top = pick_top_stories(feeds)
 
@@ -409,14 +474,15 @@ def build_digest():
     candidates = []
     for spec in by_priority:
         for story in fetch_guardian(spec["guardian_query"], spec["guardian_section"], spec["guardian_stories"]):
-            story.update(source="Guardian World", kind="story", summary="")
-            candidates.append(story)
+            if is_fresh(story, now):
+                story.update(source="Guardian World", kind="story", summary="")
+                candidates.append(story)
     for items in feeds.values():
         candidates.extend(items)
 
     # Order: AP, then The Guardian (full stories before headlines), then BBC, then NPR.
     # The sort is stable, so each feed keeps its own editorial order.
-    candidates.sort(key=lambda i: (source_rank(i["source"]), 0 if i["kind"] == "story" else 1))
+    candidates.sort(key=lambda i: (-i.get("ts", 0), source_rank(i["source"]), 0 if i["kind"] == "story" else 1))
 
     for item in candidates:
         text = " ".join([item["title"], item.get("standfirst", ""), item.get("opening", ""),
@@ -493,7 +559,8 @@ def guardian_story(pdf, story):
 
     pdf.set_font("Sans", "", 7.5)
     pdf.set_text_color(90, 90, 90)
-    credit = "The Guardian" + (f"   |   By {story['byline']}" if story["byline"] else "")
+    credit = "   |   ".join(x for x in [item_date(story), "The Guardian",
+                                      f"By {story['byline']}" if story["byline"] else ""] if x)
     pdf.multi_cell(0, 4.5, credit, new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     pdf.ln(1.5)
@@ -510,7 +577,7 @@ def guardian_story(pdf, story):
 
     pdf.set_font("Sans", "", 6.5)
     pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(0, 3.8, f"Read the full story: {story['link']}", new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(0, 3.8, f"Continue reading: {story['link']}", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     rule(pdf, 0.2, 4)
 
@@ -527,7 +594,7 @@ def link_text(item, prefix=""):
 
 
 def credit_line(item):
-    credit = source_label(item)
+    credit = "   |   ".join(x for x in [item_date(item), source_label(item)] if x)
     if item.get("also"):
         credit += "   |   Also reported by " + ", ".join(DISPLAY_NAMES.get(s, s) for s in item["also"])
     if item.get("summary_from"):
@@ -553,7 +620,7 @@ def top_story(pdf, item, lead=False):
 
     pdf.set_font("Sans", "", 6.5)
     pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(0, 3.8, link_text(item, "Read the full story: "), link=item["link"],
+    pdf.multi_cell(0, 3.8, link_text(item, "Continue reading: "), link=item["link"],
                    new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     rule(pdf, 0.2, 4)
@@ -568,7 +635,7 @@ def brief_item(pdf, item):
                        new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Sans", "", 6.5)
     pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(0, 3.6, link_text(item, f"{source_label(item)}   |   "), link=item["link"],
+    pdf.multi_cell(0, 3.6, link_text(item, "   |   ".join(x for x in [item_date(item), source_label(item)] if x) + "   |   "), link=item["link"],
                    new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     pdf.ln(3)
@@ -631,9 +698,9 @@ article h3 { font-size:1.12rem; line-height:1.22; margin:0 0 5px; font-weight:bo
 article p { margin:0 0 7px; font-size:.95rem; text-align:justify; hyphens:auto; }
 .standfirst { font-weight:bold; font-size:1rem !important; }
 .more { margin:10px 0 0; }
-.more a.button { display:inline-block; font-family:Helvetica, Arial, sans-serif; font-size:.74rem;
-                 letter-spacing:.08em; text-transform:uppercase; text-decoration:none;
-                 color:var(--bg); background:var(--fg); padding:8px 16px; border-radius:2px; }
+.more a.button { display:inline-block; font-family:Helvetica, Arial, sans-serif; font-size:.6rem;
+                 letter-spacing:.06em; text-transform:uppercase; text-decoration:none;
+                 color:var(--bg); background:var(--fg); padding:5px 10px; border-radius:2px; }
 .more a.button:hover { opacity:.85; }
 .more a.button:focus-visible { outline:2px solid var(--muted); outline-offset:3px; }
 footer { margin-top:40px; padding-top:10px; border-top:3px double var(--rule); font-family:Helvetica, Arial, sans-serif;
@@ -664,7 +731,7 @@ def slug(name):
 
 
 def html_item(item, top=False, lead=False, public=False):
-    credit = source_label(item)
+    credit = " \u00b7 ".join(x for x in [item_date(item), source_label(item)] if x)
     if item.get("kind") == "story" and item.get("byline"):
         credit += f" \u00b7 By {item['byline']}"
     if item.get("also"):
@@ -685,7 +752,7 @@ def html_item(item, top=False, lead=False, public=False):
     return (f'<article class="{cls}">'
             f'<h3>{esc(item["title"])}</h3>'
             f'<p class="credit">{esc(credit)}</p>{body}'
-            f'<p class="more"><a class="button" href="{esc(item["link"])}">Read the rest</a></p>'
+            f'<p class="more"><a class="button" href="{esc(item["link"])}">Continue reading</a></p>'
             f'</article>')
 
 

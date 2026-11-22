@@ -1,10 +1,10 @@
 # The Daily Digest: Setup Guide
 
-Every morning your Kindle receives a newspaper-style PDF. It opens with **Top Stories**, then four topic sections: **France**, **Latin America**, **Middle East**, and **Gangs**. A story that appears under Top Stories is not repeated in a topic section.
+Every morning your Kindle receives a newspaper-style PDF. It opens with **Top Stories**, then four topic sections: **France**, **Latin America**, **Middle East**, and **Gangs**. A story that appears under Top Stories is not repeated in a topic section. Every story shows its publication time in Paris time, and stories older than 36 hours are left out, so each edition is about the latest news.
 
-Sources are prioritized: **AP News first, then The Guardian, then BBC and NPR.** This order applies to Top Stories and inside every topic section. Guardian stories in the topic sections show a headline, standfirst, and opening paragraph. Everything else shows a short excerpt and a link. AP stories show AP's own short description from its article page where AP provides one, and are labeled as such. When AP provides none, the digest uses a headline and link, or borrows another source's excerpt for the same story and labels it ("Excerpt from ..."). When several sources cover the same story, it is shown once, from the highest-priority source, with the others listed under it ("Also reported by ...").
+Stories are ordered **newest first**. When two stories were published at about the same time, sources are prioritized: **AP News, then The Guardian, then BBC and NPR**. Top Stories still take a set number of stories from each source (see below). Guardian stories in the topic sections show a headline, standfirst, and opening paragraph. Everything else shows a short excerpt and a link. AP stories show AP's own short description from its article page where AP provides one, and are labeled as such. When AP provides none, the digest uses a headline and link, or borrows another source's excerpt for the same story and labels it ("Excerpt from ..."). When several sources cover the same story, it is shown once, from the highest-priority source, with the others listed under it ("Also reported by ...").
 
-Each run also publishes a **web edition**: the same digest as a web page, with a **Read the rest** button under each story, at a web address you can open on any device (see Part 9).
+Each run also publishes a **web edition**: the same digest as a web page, with a small **Continue reading** button under each story, at a web address you can open on any device (see Part 9).
 
 The job runs on GitHub's servers, so your computer can be off. Setup is done entirely in a web browser.
 
@@ -94,7 +94,7 @@ Common problems:
 - *Authentication error*: you used your normal Gmail password. Use the App Password.
 - *Guardian stories missing*: the Guardian key is missing or mistyped. Headlines still send.
 - *AP News missing*: open the run, then the **Build the digest and send it to Kindle** step. Near the top, one line per feed reads like `Feed check: AP News #1: 20 items (HTTP 200)`. If every AP line says 0 items, AP's sources are blocking the request that day. Copy those lines to me and I'll adjust. The digest still sends without AP.
-- *AP descriptions missing*: a line reads `AP descriptions: x of y AP stories had one`. A low number is normal if AP's pages refuse automated reads or don't include a description. Those stories still appear with a headline and link, so nothing is lost.
+- *AP descriptions missing*: the step log shows `AP descriptions: x of y AP stories had one`, followed by `AP detail:` lines that give the reason for the misses (for example, `AP page refused the request (HTTP 403)` or `could not find the apnews.com address in the link`). Copy those lines to me. Those stories still appear with a headline and link, so nothing is lost.
 - *Nothing on the Kindle*: your Gmail address isn't on the Kindle's approved list.
 
 ## Part 9: Put the web edition online (GitHub Pages)
@@ -152,7 +152,8 @@ Nothing else is needed. The digest is sent at 6:30 AM Paris time, and the schedu
 - **Guardian stories per section:** change `guardian_stories` in each section.
 - **Headlines per section:** change `MAX_BRIEFS_PER_SECTION`.
 - **Source priority:** edit `SOURCE_ORDER` in the same file. The first name has the highest priority.
-- **Number of top stories:** edit `TOP_PER_SOURCE`, which sets how many lead stories each source can contribute to Top Stories. The default is 4 from AP, 3 from the Guardian, 2 from BBC, and 1 from NPR.
+- **Number of top stories:** edit `TOP_PER_SOURCE`, which sets how many lead stories each source can contribute to Top Stories. The default is 4 from AP, 3 from the Guardian, 2 from BBC, and 1 from NPR. The newest stories are chosen first, within these limits.
+- **How old a story can be:** edit `MAX_AGE_HOURS` (default 36). Stories older than this are left out of both the PDF and the web edition.
 - **Other Headlines section:** set `INCLUDE_OTHER_HEADLINES = True` to add a final section for stories that fit no topic. It is off by default.
 - **News sources:** edit `RSS_FEEDS` in the same file. AP shut down its own RSS feeds in 2024, so AP News is read through a Google News search limited to apnews.com (plus AP's official Flipboard feed as a backup, and one AP search for each of your topics). AP links open through Google News and forward to apnews.com.
 - **Send it now:** go to the Actions tab and run the workflow manually.
@@ -165,6 +166,6 @@ Nothing else is needed. The digest is sent at 6:30 AM Paris time, and the schedu
 - Gang stories are matched on specific terms such as "gang violence," "gang members," "drug cartel," and MS-13. To change them, edit the Gangs `pattern` and `guardian_query` in the SECTIONS list.
 - GitHub turns off scheduled jobs in repositories with no activity for 60 days. If the digest stops, check the Actions tab for a prompt to re-enable it.
 - The web edition is laid out like a newspaper, with two columns below a full-width lead story. A **Top** button on the left stays visible while you scroll and returns you to the masthead. The PDF keeps its own layout.
-- The Guardian text shown is its own standfirst and opening paragraph. Use the **Read the rest** button under each story in the web edition, or the link in the PDF, to read the full story on the Guardian's site.
+- The Guardian text shown is its own standfirst and opening paragraph. Use the **Read the rest** button under each story in the web edition, or the **Continue reading** link in the PDF, to read the full story on the Guardian's site.
 - Google sorts AP results by relevance rather than time, and AP stories are limited to the last day. That suits a morning digest, but the AP order is Google's idea of the most important stories, not AP's own front page.
 - Arabic and other non-Latin scripts may not display correctly in the PDF. English-language stories display normally.
