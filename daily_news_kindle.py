@@ -752,7 +752,7 @@ def html_item(item, top=False, lead=False, public=False):
     return (f'<article class="{cls}">'
             f'<h3>{esc(item["title"])}</h3>'
             f'<p class="credit">{esc(credit)}</p>{body}'
-            f'<p class="more"><a class="button" href="{esc(item["link"])}">Continue reading</a></p>'
+            f'<p class="more"><a class="button" href="{esc(item["link"])}" target="_blank" rel="noopener noreferrer">Continue reading</a></p>'
             f'</article>')
 
 

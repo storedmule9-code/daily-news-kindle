@@ -4,7 +4,7 @@ Every morning your Kindle receives a newspaper-style PDF. It opens with **Top St
 
 Stories are ordered **newest first**. When two stories were published at about the same time, sources are prioritized: **AP News, then The Guardian, then BBC and NPR**. Top Stories still take a set number of stories from each source (see below). Guardian stories in the topic sections show a headline, standfirst, and opening paragraph. Everything else shows a short excerpt and a link. AP stories show AP's own short description from its article page where AP provides one, and are labeled as such. When AP provides none, the digest uses a headline and link, or borrows another source's excerpt for the same story and labels it ("Excerpt from ..."). When several sources cover the same story, it is shown once, from the highest-priority source, with the others listed under it ("Also reported by ...").
 
-Each run also publishes a **web edition**: the same digest as a web page, with a small **Continue reading** button under each story, at a web address you can open on any device (see Part 9).
+Each run also publishes a **web edition**: the same digest as a web page, with a small **Continue reading** button under each story (it opens the story in a new tab), at a web address you can open on any device (see Part 9).
 
 The job runs on GitHub's servers, so your computer can be off. Setup is done entirely in a web browser.
 
