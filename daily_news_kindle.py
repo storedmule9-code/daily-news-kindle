@@ -12,6 +12,7 @@ Each run also writes the digest as a web page (docs/index.html) for GitHub Pages
 and can email you the full version (set HTML_EMAIL_TO).
 """
 
+import base64
 import datetime
 import html
 import json
@@ -21,6 +22,7 @@ import smtplib
 import sys
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from email.message import EmailMessage
 
 import feedparser
@@ -38,6 +40,8 @@ MAX_BRIEFS_PER_SECTION = 8  # short headlines shown per section
 SUMMARY_CHARS = 350         # length of RSS excerpts
 OPENING_CHARS = 700         # length of Guardian opening paragraph shown
 TOP_SUMMARY_CHARS = 500     # length of excerpts under Top Stories
+AP_DESCRIPTION_FETCHES = 60  # how many AP articles to check for AP's own description
+AP_FETCH_TIMEOUT = 10        # seconds to wait for each AP page
 
 # Source priority, highest first: AP News, then The Guardian, then the rest.
 SOURCE_ORDER = ["AP News", "Guardian World", "BBC World", "NPR World"]
@@ -322,9 +326,65 @@ def matches(spec, text):
     return not re.search(exclude, text)
 
 
+def ap_direct_url(link):
+    """Turn a Google News article link into the apnews.com address it encodes, if possible."""
+    m = re.search(r"news\.google\.com/(?:rss/)?articles/([A-Za-z0-9_-]+)", link or "")
+    if not m:
+        return link
+    token = m.group(1)
+    try:
+        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+        found = re.search(rb"https?://[\x21-\x7e]+", raw)
+        if found:
+            return found.group(0).decode("ascii")
+    except Exception:
+        pass
+    return link
+
+
+def fetch_ap_description(link):
+    """Return AP's own short description of an article (its page metadata), or ''."""
+    url = ap_direct_url(link)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=AP_FETCH_TIMEOUT) as resp:
+            if "apnews.com" not in urllib.parse.urlsplit(resp.geturl()).netloc:
+                return ""
+            page = resp.read(120000).decode("utf-8", "replace")
+    except Exception:
+        return ""
+    patterns = (
+        r'<meta[^>]+(?:name|property)=["\'](?:og:)?description["\'][^>]*content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*(?:name|property)=["\'](?:og:)?description["\']',
+    )
+    for pattern in patterns:
+        m = re.search(pattern, page, re.I)
+        if m:
+            text = clean(m.group(1))
+            if len(text) >= 40:
+                return text
+    return ""
+
+
+def add_ap_descriptions(feeds):
+    """Replace AP headline-only items with AP's own description where the page has one."""
+    items = feeds.get("AP News", [])[:AP_DESCRIPTION_FETCHES]
+    if not items:
+        return
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        descriptions = list(pool.map(lambda i: fetch_ap_description(i["link"]), items))
+    found = 0
+    for item, desc in zip(items, descriptions):
+        if desc:
+            item["summary"] = truncate(desc, TOP_SUMMARY_CHARS)
+            found += 1
+    print(f"AP descriptions: {found} of {len(items)} AP stories had one")
+
+
 def build_digest():
     """Return the sections to print, in order: Top Stories, then each topic."""
     feeds = fetch_rss_by_source()
+    add_ap_descriptions(feeds)
     top = pick_top_stories(feeds)
 
     # Anything already shown under Top Stories is never repeated below.
@@ -540,35 +600,58 @@ def build_pdf(sections, today: str) -> bytes:
 # ---- Web edition (HTML) --------------------------------------------------
 
 HTML_CSS = """
-:root { --bg:#fbfaf7; --fg:#1a1a1a; --muted:#666; --rule:#1a1a1a; --soft:#d9d6cf; color-scheme: light dark; }
+:root { --bg:#fbfaf7; --fg:#1a1a1a; --muted:#666; --rule:#1a1a1a; --soft:#cfcbc2; color-scheme: light dark; }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#16161a; --fg:#ececec; --muted:#a0a0a8; --rule:#ececec; --soft:#3a3a42; }
 }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--fg);
-       font-family: Georgia, "Times New Roman", serif; line-height:1.55; }
-.page { max-width:720px; margin:0 auto; padding:24px 18px 64px; }
-.masthead { text-align:center; border-bottom:3px double var(--rule); padding-bottom:10px; margin-bottom:14px; }
-.masthead h1 { margin:0; font-size:clamp(2rem, 8vw, 3.2rem); letter-spacing:.04em; }
-.masthead .dateline { font-family:Helvetica, Arial, sans-serif; font-size:.72rem;
-                      letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin-top:6px; }
-nav { text-align:center; margin:0 0 8px; line-height:2;
-      font-family:Helvetica, Arial, sans-serif; font-size:.78rem; letter-spacing:.06em; text-transform:uppercase; }
-nav a { display:inline-block; margin:0 9px; color:var(--fg); text-decoration:none; border-bottom:1px solid var(--soft); }
-h2 { font-family:Helvetica, Arial, sans-serif; font-size:.95rem; letter-spacing:.12em; text-transform:uppercase;
-     border-bottom:2px solid var(--rule); padding-bottom:4px; margin:34px 0 14px; }
-article { padding:14px 0; border-bottom:1px solid var(--soft); }
-article h3 { margin:0 0 4px; font-size:1.25rem; line-height:1.25; }
-article.lead h3 { font-size:1.75rem; }
-article h3 a { color:var(--fg); text-decoration:none; }
-article h3 a:hover { text-decoration:underline; }
-.credit { font-family:Helvetica, Arial, sans-serif; font-size:.72rem; color:var(--muted); margin:0 0 8px; }
-article p { margin:0 0 8px; }
-.standfirst { font-weight:bold; }
-.more { font-family:Helvetica, Arial, sans-serif; font-size:.75rem; }
-.more a { color:var(--muted); }
+       font-family: Georgia, "Times New Roman", serif; line-height:1.5; }
+.page { max-width:1000px; margin:0 auto; padding:20px 18px 64px; }
+.masthead { text-align:center; border-top:1px solid var(--rule); border-bottom:3px double var(--rule);
+            padding:12px 0 10px; margin-bottom:8px; }
+.masthead h1 { margin:0; font-size:clamp(2.2rem, 9vw, 4.4rem); letter-spacing:.03em; line-height:1; }
+.masthead .dateline { font-family:Helvetica, Arial, sans-serif; font-size:.7rem;
+                      letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin-top:8px; }
+nav { text-align:center; margin:0 0 6px; padding-bottom:6px; border-bottom:1px solid var(--rule);
+      font-family:Helvetica, Arial, sans-serif; font-size:.74rem; letter-spacing:.06em; text-transform:uppercase; }
+nav a { display:inline-block; margin:0 10px; color:var(--fg); text-decoration:none; }
+nav a:hover { text-decoration:underline; }
+section > h2 { font-family:Helvetica, Arial, sans-serif; font-size:.86rem; letter-spacing:.16em; text-transform:uppercase;
+               border-top:3px solid var(--rule); border-bottom:1px solid var(--rule);
+               padding:5px 0; margin:28px 0 14px; }
+.lead { border-bottom:2px solid var(--rule); padding-bottom:16px; margin-bottom:14px; }
+.lead h3 { font-size:2.2rem; line-height:1.1; }
+.lead p { font-size:1.08rem; }
+.cols { column-count:2; column-gap:30px; column-rule:1px solid var(--soft); }
+article { break-inside:avoid; padding:0 0 14px; margin:0 0 14px; border-bottom:1px solid var(--soft); }
+article h3 { font-size:1.12rem; line-height:1.22; margin:0 0 5px; font-weight:bold; }
+.credit { font-family:Helvetica, Arial, sans-serif; font-size:.66rem; text-transform:uppercase; letter-spacing:.05em;
+          color:var(--muted); margin:0 0 7px; line-height:1.4; }
+article p { margin:0 0 7px; font-size:.95rem; text-align:justify; hyphens:auto; }
+.standfirst { font-weight:bold; font-size:1rem !important; }
+.more { margin:10px 0 0; }
+.more a.button { display:inline-block; font-family:Helvetica, Arial, sans-serif; font-size:.74rem;
+                 letter-spacing:.08em; text-transform:uppercase; text-decoration:none;
+                 color:var(--bg); background:var(--fg); padding:8px 16px; border-radius:2px; }
+.more a.button:hover { opacity:.85; }
+.more a.button:focus-visible { outline:2px solid var(--muted); outline-offset:3px; }
+footer { margin-top:40px; padding-top:10px; border-top:3px double var(--rule); font-family:Helvetica, Arial, sans-serif;
+         font-size:.7rem; color:var(--muted); text-align:center; }
 footer a { color:var(--muted); }
-footer { margin-top:40px; font-family:Helvetica, Arial, sans-serif; font-size:.72rem; color:var(--muted); text-align:center; }
+html { scroll-behavior:smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior:auto; } }
+.to-top { position:fixed; left:max(10px, env(safe-area-inset-left)); bottom:22px; z-index:10;
+          font-family:Helvetica, Arial, sans-serif; font-size:.7rem; letter-spacing:.08em; text-transform:uppercase;
+          text-decoration:none; color:var(--bg); background:var(--fg); padding:7px 12px; border-radius:2px;
+          box-shadow:0 2px 6px rgba(0,0,0,.2); }
+.to-top:hover { opacity:.85; }
+.to-top:focus-visible { outline:2px solid var(--muted); outline-offset:3px; }
+@media (max-width: 640px) {
+  .cols { column-count:1; }
+  .lead h3 { font-size:1.7rem; }
+  .masthead h1 { letter-spacing:.01em; }
+}
 """
 
 
@@ -600,9 +683,9 @@ def html_item(item, top=False, lead=False, public=False):
 
     cls = "lead" if lead else ""
     return (f'<article class="{cls}">'
-            f'<h3><a href="{esc(item["link"])}">{esc(item["title"])}</a></h3>'
+            f'<h3>{esc(item["title"])}</h3>'
             f'<p class="credit">{esc(credit)}</p>{body}'
-            f'<p class="more"><a href="{esc(item["link"])}">Read the full story</a></p>'
+            f'<p class="more"><a class="button" href="{esc(item["link"])}">Read the rest</a></p>'
             f'</article>')
 
 
@@ -611,9 +694,14 @@ def build_html(sections, today: str, public: bool = False) -> str:
     blocks = []
     for section in sections:
         is_top = bool(section.get("top"))
-        items = "".join(html_item(i, top=is_top, lead=(is_top and n == 0), public=public)
-                        for n, i in enumerate(section["items"]))
-        blocks.append(f'<section id="{slug(section["name"])}"><h2>{esc(section["name"])}</h2>{items}</section>')
+        rendered = [html_item(i, top=is_top, lead=(is_top and n == 0), public=public)
+                    for n, i in enumerate(section["items"])]
+        if is_top and rendered:
+            # The lead story runs across the full width; the rest flow into two columns.
+            body = rendered[0] + (f'<div class="cols">{"".join(rendered[1:])}</div>' if len(rendered) > 1 else "")
+        else:
+            body = f'<div class="cols">{"".join(rendered)}</div>'
+        blocks.append(f'<section id="{slug(section["name"])}"><h2>{esc(section["name"])}</h2>{body}</section>')
 
     robots = '<meta name="robots" content="noindex, nofollow">\n' if public else ""
     return f"""<!DOCTYPE html>
@@ -627,12 +715,13 @@ def build_html(sections, today: str, public: bool = False) -> str:
 </head>
 <body>
 <div class="page">
-<header class="masthead"><h1>THE DAILY DIGEST</h1>
+<header class="masthead" id="top"><h1>THE DAILY DIGEST</h1>
 <div class="dateline">{esc(today)} &nbsp;|&nbsp; Morning Edition</div></header>
 <nav>{nav}</nav>
 {"".join(blocks)}
 <footer>Headlines, excerpts and links from AP News, The Guardian, BBC News and NPR. Guardian content is provided through the <a href="https://open-platform.theguardian.com/">Guardian Open Platform</a>. Follow the links to read the full stories on the publishers\u2019 sites.</footer>
 </div>
+<a class="to-top" href="#top" aria-label="Back to top">Top</a>
 </body>
 </html>
 """
